@@ -1,0 +1,288 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Tenant {
+  id                      String   @id @default(cuid())
+  name                    String
+  slug                    String   @unique
+  timezone                String   @default("America/Sao_Paulo")
+  failureWebhookUrl       String?
+  defaultInstanceName     String?
+  defaultInstanceTokenEnc String?
+  defaultParticipants     String[] @default([])
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  users                User[]
+  groups               Group[]
+  groupLists           GroupList[]
+  shortlinks           GroupShortlink[]
+  messages             Message[]
+  mediaAssets          MediaAsset[]
+  schedules            Schedule[]
+  groupUpdateSchedules GroupUpdateSchedule[]
+  executions           Execution[]
+  apiKeys              ApiKey[]
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  OPERATOR
+}
+
+model User {
+  id        String   @id @default(cuid())
+  tenantId  String
+  email     String
+  password  String
+  name      String
+  role      Role     @default(OPERATOR)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+}
+
+model ApiKey {
+  id         String    @id @default(cuid())
+  tenantId   String
+  name       String
+  hash       String    @unique
+  prefix     String
+  scopes     String[]
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+  revokedAt  DateTime?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+}
+
+model Group {
+  id                String   @id @default(cuid())
+  tenantId          String
+  instanceName      String
+  remoteId          String
+  name              String
+  description       String?
+  pictureUrl        String?
+  participantsCount Int?
+  syncedAt          DateTime
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant       Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  memberships  GroupListMembership[]
+  shortlinks   GroupShortlink[]
+
+  @@unique([tenantId, instanceName, remoteId])
+  @@index([tenantId, name])
+}
+
+model GroupShortlink {
+  id                String    @id @default(cuid())
+  tenantId          String
+  groupId           String
+  slug              String    @unique
+  currentInviteUrl  String?
+  lastRefreshedAt   DateTime?
+  active            Boolean   @default(true)
+  clicks            Int       @default(0)
+  lastClickedAt     DateTime?
+  notes             String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  group  Group  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([groupId])
+}
+
+model GroupList {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  color     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant      Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  memberships GroupListMembership[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+}
+
+model GroupListMembership {
+  id          String @id @default(cuid())
+  groupListId String
+  groupId     String
+
+  groupList GroupList @relation(fields: [groupListId], references: [id], onDelete: Cascade)
+  group     Group     @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([groupListId, groupId])
+  @@index([groupId])
+}
+
+model MediaAsset {
+  id        String   @id @default(cuid())
+  tenantId  String
+  s3Key     String
+  mime      String
+  size      Int
+  thumbKey  String?
+  createdAt DateTime @default(now())
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  messageMedias MessageMedia[]
+
+  @@index([tenantId])
+}
+
+model Message {
+  id          String   @id @default(cuid())
+  tenantId    String
+  name        String
+  text        String?
+  mentionAll  Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant    Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  medias    MessageMedia[]
+  schedules Schedule[]
+
+  @@index([tenantId])
+}
+
+enum MessageMediaKind {
+  AUTO       // detecta pelo mime
+  IMAGE
+  VIDEO
+  AUDIO      // áudio normal (MP3/OGG, balão de música)
+  PTT        // mensagem de voz (gravada, balão verde)
+  DOCUMENT   // anexo genérico
+}
+
+model MessageMedia {
+  id        String           @id @default(cuid())
+  messageId String
+  mediaId   String
+  order     Int
+  kind      MessageMediaKind @default(AUTO)
+
+  message Message    @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  media   MediaAsset @relation(fields: [mediaId], references: [id])
+
+  @@unique([messageId, order])
+}
+
+enum ScheduleType {
+  ONCE
+  DAILY
+  WEEKLY
+  CUSTOM_CRON
+}
+
+enum ScheduleStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELED
+}
+
+model Schedule {
+  id               String         @id @default(cuid())
+  tenantId         String
+  messageId        String
+  instanceName     String
+  instanceTokenEnc String
+  groupRemoteIds   String[]
+  groupListIds     String[]       @default([])
+  type             ScheduleType
+  startAt          DateTime
+  endAt            DateTime?
+  cron             String?
+  timezone         String         @default("America/Sao_Paulo")
+  status           ScheduleStatus @default(ACTIVE)
+  bullJobId        String?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  message    Message     @relation(fields: [messageId], references: [id])
+  executions Execution[]
+
+  @@index([tenantId])
+  @@index([status])
+}
+
+enum GroupUpdateTarget {
+  NAME
+  DESCRIPTION
+  PICTURE
+}
+
+model GroupUpdateSchedule {
+  id                String            @id @default(cuid())
+  tenantId          String
+  instanceName      String
+  instanceTokenEnc  String
+  groupRemoteId     String
+  target            GroupUpdateTarget
+  newName           String?
+  newDescription    String?
+  newPictureMediaId String?
+  type              ScheduleType
+  startAt           DateTime
+  cron              String?
+  status            ScheduleStatus    @default(ACTIVE)
+  bullJobId         String?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  executions Execution[]
+
+  @@index([tenantId])
+}
+
+enum ExecStatus {
+  SUCCESS
+  FAILED
+  SKIPPED
+}
+
+model Execution {
+  id                    String     @id @default(cuid())
+  tenantId              String
+  scheduleId            String?
+  groupUpdateScheduleId String?
+  ranAt                 DateTime   @default(now())
+  status                ExecStatus
+  groupRemoteId         String?
+  responsePayload       Json?
+  errorMessage          String?
+
+  tenant              Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  schedule            Schedule?            @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+  groupUpdateSchedule GroupUpdateSchedule? @relation(fields: [groupUpdateScheduleId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, ranAt])
+  @@index([scheduleId])
+  @@index([groupUpdateScheduleId])
+}
