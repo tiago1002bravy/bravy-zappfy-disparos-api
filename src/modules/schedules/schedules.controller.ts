@@ -29,8 +29,8 @@ import { SchedulesService } from './schedules.service';
 
 class CreateScheduleDto {
   @IsString() messageId!: string;
-  @IsString() @MinLength(1) instanceName!: string;
-  @IsString() @MinLength(8) instanceToken!: string;
+  @IsOptional() @IsString() instanceName?: string;
+  @IsOptional() @IsString() instanceToken?: string;
   @IsOptional() @IsArray() @IsString({ each: true }) groupRemoteIds?: string[];
   @IsOptional() @IsArray() @IsString({ each: true }) groupListIds?: string[];
   @IsEnum(ScheduleType) type!: ScheduleType;
