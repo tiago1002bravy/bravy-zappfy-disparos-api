@@ -18,6 +18,7 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
     this.connection = new IORedis({
       host: process.env.REDIS_HOST ?? 'localhost',
       port: Number(process.env.REDIS_PORT ?? 6379),
+      password: process.env.REDIS_PASSWORD || undefined,
       maxRetriesPerRequest: null,
     });
     this.sendQueue = new Queue<SendMessageJobData>(QUEUE_SEND_MESSAGE, { connection: this.connection });
