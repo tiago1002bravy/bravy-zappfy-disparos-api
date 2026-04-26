@@ -192,6 +192,10 @@ const updateWorker = new Worker<UpdateGroupJobData>(
     });
     if (!sched || sched.status !== 'ACTIVE') return;
 
+    const wait = randomDelay();
+    log(`anti-ban delay ${wait}ms before group update ${sched.groupRemoteId}`);
+    await sleep(wait);
+
     const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } });
     const token = decryptToken(sched.instanceTokenEnc);
 
@@ -244,7 +248,7 @@ const updateWorker = new Worker<UpdateGroupJobData>(
       });
     }
   },
-  { connection, concurrency: 4 },
+  { connection, concurrency: 1 },
 );
 
 sendWorker.on('failed', (job, err) => log(`send job failed ${job?.id}: ${err.message}`));
