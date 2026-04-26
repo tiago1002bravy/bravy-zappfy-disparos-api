@@ -1,0 +1,314 @@
+import { Injectable } from '@nestjs/common';
+import { ExecStatus, ScheduleStatus, ScheduleType } from '@prisma/client';
+import { PrismaService } from '../../prisma/prisma.service';
+import { requireTenantId } from '../../common/tenant-context';
+import { nextOccurrences } from '../schedules/cron.util';
+
+export type CalendarKind = 'all' | 'message' | 'group-update';
+
+export interface CalendarEvent {
+  id: string;
+  kind: 'message' | 'group-update';
+  scheduleId: string;
+  occurrenceAt: string;
+  title: string;
+  status: 'scheduled' | 'success' | 'partial' | 'failed' | 'skipped';
+  groupCount: number;
+  scheduleType: ScheduleType;
+  scheduleStatus: ScheduleStatus;
+  isPast: boolean;
+  executionStats?: { success: number; failed: number; skipped: number; total: number };
+}
+
+const MAX_EXPAND = 1000;
+
+function floorMinute(d: Date): Date {
+  const x = new Date(d);
+  x.setSeconds(0, 0);
+  return x;
+}
+
+@Injectable()
+export class CalendarService {
+  constructor(private prisma: PrismaService) {}
+
+  async events(from: Date, to: Date, kind: CalendarKind): Promise<CalendarEvent[]> {
+    const tenantId = requireTenantId();
+    const events: CalendarEvent[] = [];
+    const now = new Date();
+
+    const includeMessage = kind === 'all' || kind === 'message';
+    const includeGroupUpdate = kind === 'all' || kind === 'group-update';
+
+    if (includeMessage) {
+      const schedules = await this.prisma.schedule.findMany({
+        where: {
+          tenantId,
+          status: { in: ['ACTIVE', 'PAUSED', 'COMPLETED'] },
+          startAt: { lte: to },
+          OR: [{ endAt: null }, { endAt: { gte: from } }],
+        },
+        include: { message: { select: { id: true, name: true } } },
+      });
+
+      const allListIds = [...new Set(schedules.flatMap((s) => s.groupListIds))];
+      const listCounts = new Map<string, number>();
+      if (allListIds.length) {
+        const grouped = await this.prisma.groupListMembership.groupBy({
+          by: ['groupListId'],
+          where: { groupListId: { in: allListIds } },
+          _count: { _all: true },
+        });
+        for (const g of grouped) listCounts.set(g.groupListId, g._count._all);
+      }
+
+      const groupCountFor = (s: { groupRemoteIds: string[]; groupListIds: string[] }) =>
+        s.groupRemoteIds.length +
+        s.groupListIds.reduce((acc, id) => acc + (listCounts.get(id) ?? 0), 0);
+
+      const futureFrom = now > from ? now : from;
+      for (const s of schedules) {
+        const gc = groupCountFor(s);
+        const baseTitle = s.message.name;
+        if (futureFrom < to) {
+          if (s.type === 'ONCE') {
+            if (s.startAt >= futureFrom && s.startAt <= to && s.status !== 'COMPLETED') {
+              events.push({
+                id: `sch-${s.id}-${s.startAt.toISOString()}`,
+                kind: 'message',
+                scheduleId: s.id,
+                occurrenceAt: s.startAt.toISOString(),
+                title: baseTitle,
+                status: s.status === 'PAUSED' ? 'skipped' : 'scheduled',
+                groupCount: gc,
+                scheduleType: s.type,
+                scheduleStatus: s.status,
+                isPast: false,
+              });
+            }
+          } else if (s.cron) {
+            try {
+              const occs = nextOccurrences(s.cron, MAX_EXPAND, s.timezone, futureFrom);
+              for (const occ of occs) {
+                if (occ > to) break;
+                if (s.endAt && occ > s.endAt) break;
+                events.push({
+                  id: `sch-${s.id}-${occ.toISOString()}`,
+                  kind: 'message',
+                  scheduleId: s.id,
+                  occurrenceAt: occ.toISOString(),
+                  title: baseTitle,
+                  status: s.status === 'PAUSED' ? 'skipped' : 'scheduled',
+                  groupCount: gc,
+                  scheduleType: s.type,
+                  scheduleStatus: s.status,
+                  isPast: false,
+                });
+              }
+            } catch {
+              // cron inválido — ignora
+            }
+          }
+        }
+      }
+
+      const executions = await this.prisma.execution.findMany({
+        where: {
+          tenantId,
+          ranAt: { gte: from, lte: to },
+          scheduleId: { not: null },
+        },
+        select: { scheduleId: true, ranAt: true, status: true },
+      });
+
+      const scheduleById = new Map(schedules.map((s) => [s.id, s]));
+      const groups = new Map<string, { scheduleId: string; minute: Date; execs: ExecStatus[] }>();
+      for (const e of executions) {
+        if (!e.scheduleId) continue;
+        const minute = floorMinute(e.ranAt);
+        const key = `${e.scheduleId}|${minute.toISOString()}`;
+        let g = groups.get(key);
+        if (!g) {
+          g = { scheduleId: e.scheduleId, minute, execs: [] };
+          groups.set(key, g);
+        }
+        g.execs.push(e.status);
+      }
+
+      for (const [key, g] of groups) {
+        const s = scheduleById.get(g.scheduleId);
+        if (!s) {
+          // schedule pode ter sido cancelado/deletado — mantém o registro histórico mesmo assim
+          // mas precisamos de metadados — nesse caso busca pontual
+          const orphan = await this.prisma.schedule.findFirst({
+            where: { id: g.scheduleId },
+            include: { message: { select: { name: true } } },
+          });
+          if (!orphan) continue;
+          const total = g.execs.length;
+          const success = g.execs.filter((x) => x === 'SUCCESS').length;
+          const failed = g.execs.filter((x) => x === 'FAILED').length;
+          const skipped = g.execs.filter((x) => x === 'SKIPPED').length;
+          let status: CalendarEvent['status'];
+          if (success === total) status = 'success';
+          else if (failed === total) status = 'failed';
+          else if (skipped === total) status = 'skipped';
+          else status = 'partial';
+          events.push({
+            id: `exec-${key}`,
+            kind: 'message',
+            scheduleId: orphan.id,
+            occurrenceAt: g.minute.toISOString(),
+            title: orphan.message.name,
+            status,
+            groupCount: total,
+            scheduleType: orphan.type,
+            scheduleStatus: orphan.status,
+            isPast: true,
+            executionStats: { success, failed, skipped, total },
+          });
+          continue;
+        }
+        const total = g.execs.length;
+        const success = g.execs.filter((x) => x === 'SUCCESS').length;
+        const failed = g.execs.filter((x) => x === 'FAILED').length;
+        const skipped = g.execs.filter((x) => x === 'SKIPPED').length;
+        let status: CalendarEvent['status'];
+        if (success === total) status = 'success';
+        else if (failed === total) status = 'failed';
+        else if (skipped === total) status = 'skipped';
+        else status = 'partial';
+        events.push({
+          id: `exec-${key}`,
+          kind: 'message',
+          scheduleId: s.id,
+          occurrenceAt: g.minute.toISOString(),
+          title: s.message.name,
+          status,
+          groupCount: total,
+          scheduleType: s.type,
+          scheduleStatus: s.status,
+          isPast: true,
+          executionStats: { success, failed, skipped, total },
+        });
+      }
+    }
+
+    if (includeGroupUpdate) {
+      const schedules = await this.prisma.groupUpdateSchedule.findMany({
+        where: {
+          tenantId,
+          status: { in: ['ACTIVE', 'PAUSED', 'COMPLETED'] },
+          startAt: { lte: to },
+        },
+      });
+
+      const futureFrom = now > from ? now : from;
+      for (const s of schedules) {
+        const title = `${s.target.toLowerCase()}: ${s.newName ?? s.newDescription ?? 'imagem'}`;
+        if (futureFrom < to) {
+          if (s.type === 'ONCE') {
+            if (s.startAt >= futureFrom && s.startAt <= to && s.status !== 'COMPLETED') {
+              events.push({
+                id: `gus-${s.id}-${s.startAt.toISOString()}`,
+                kind: 'group-update',
+                scheduleId: s.id,
+                occurrenceAt: s.startAt.toISOString(),
+                title,
+                status: s.status === 'PAUSED' ? 'skipped' : 'scheduled',
+                groupCount: 1,
+                scheduleType: s.type,
+                scheduleStatus: s.status,
+                isPast: false,
+              });
+            }
+          } else if (s.cron) {
+            try {
+              const occs = nextOccurrences(s.cron, MAX_EXPAND, 'America/Sao_Paulo', futureFrom);
+              for (const occ of occs) {
+                if (occ > to) break;
+                events.push({
+                  id: `gus-${s.id}-${occ.toISOString()}`,
+                  kind: 'group-update',
+                  scheduleId: s.id,
+                  occurrenceAt: occ.toISOString(),
+                  title,
+                  status: s.status === 'PAUSED' ? 'skipped' : 'scheduled',
+                  groupCount: 1,
+                  scheduleType: s.type,
+                  scheduleStatus: s.status,
+                  isPast: false,
+                });
+              }
+            } catch {
+              // ignora cron inválido
+            }
+          }
+        }
+      }
+
+      const executions = await this.prisma.execution.findMany({
+        where: {
+          tenantId,
+          ranAt: { gte: from, lte: to },
+          groupUpdateScheduleId: { not: null },
+        },
+        select: { groupUpdateScheduleId: true, ranAt: true, status: true },
+      });
+
+      const scheduleById = new Map(schedules.map((s) => [s.id, s]));
+      const groups = new Map<
+        string,
+        { scheduleId: string; minute: Date; execs: ExecStatus[] }
+      >();
+      for (const e of executions) {
+        if (!e.groupUpdateScheduleId) continue;
+        const minute = floorMinute(e.ranAt);
+        const key = `${e.groupUpdateScheduleId}|${minute.toISOString()}`;
+        let g = groups.get(key);
+        if (!g) {
+          g = { scheduleId: e.groupUpdateScheduleId, minute, execs: [] };
+          groups.set(key, g);
+        }
+        g.execs.push(e.status);
+      }
+
+      for (const [key, g] of groups) {
+        let s = scheduleById.get(g.scheduleId);
+        if (!s) {
+          const orphan = await this.prisma.groupUpdateSchedule.findFirst({
+            where: { id: g.scheduleId },
+          });
+          if (!orphan) continue;
+          s = orphan;
+        }
+        const total = g.execs.length;
+        const success = g.execs.filter((x) => x === 'SUCCESS').length;
+        const failed = g.execs.filter((x) => x === 'FAILED').length;
+        const skipped = g.execs.filter((x) => x === 'SKIPPED').length;
+        let status: CalendarEvent['status'];
+        if (success === total) status = 'success';
+        else if (failed === total) status = 'failed';
+        else if (skipped === total) status = 'skipped';
+        else status = 'partial';
+        const title = `${s.target.toLowerCase()}: ${s.newName ?? s.newDescription ?? 'imagem'}`;
+        events.push({
+          id: `exec-gus-${key}`,
+          kind: 'group-update',
+          scheduleId: s.id,
+          occurrenceAt: g.minute.toISOString(),
+          title,
+          status,
+          groupCount: total,
+          scheduleType: s.type,
+          scheduleStatus: s.status,
+          isPast: true,
+          executionStats: { success, failed, skipped, total },
+        });
+      }
+    }
+
+    events.sort((a, b) => a.occurrenceAt.localeCompare(b.occurrenceAt));
+    return events;
+  }
+}

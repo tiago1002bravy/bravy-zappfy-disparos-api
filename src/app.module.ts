@@ -12,6 +12,7 @@ import { MessagesModule } from './modules/messages/messages.module';
 import { SchedulesModule } from './modules/schedules/schedules.module';
 import { GroupUpdateSchedulesModule } from './modules/group-update-schedules/group-update-schedules.module';
 import { ExecutionsModule } from './modules/executions/executions.module';
+import { CalendarModule } from './modules/calendar/calendar.module';
 import { CronModule } from './modules/cron/cron.module';
 import { UazapiModule } from './modules/uazapi/uazapi.module';
 import { QueueModule } from './queue/queue.module';
@@ -33,6 +34,7 @@ import { QueueModule } from './queue/queue.module';
     SchedulesModule,
     GroupUpdateSchedulesModule,
     ExecutionsModule,
+    CalendarModule,
     CronModule,
   ],
 })
