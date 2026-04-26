@@ -135,40 +135,24 @@ export class CalendarService {
         g.execs.push(e.status);
       }
 
-      for (const [key, g] of groups) {
-        const s = scheduleById.get(g.scheduleId);
-        if (!s) {
-          // schedule pode ter sido cancelado/deletado — mantém o registro histórico mesmo assim
-          // mas precisamos de metadados — nesse caso busca pontual
-          const orphan = await this.prisma.schedule.findFirst({
-            where: { id: g.scheduleId },
+      const orphanIds = [...new Set([...groups.values()].map((g) => g.scheduleId))].filter(
+        (id) => !scheduleById.has(id),
+      );
+      const orphans = orphanIds.length
+        ? await this.prisma.schedule.findMany({
+            where: { tenantId, id: { in: orphanIds } },
             include: { message: { select: { name: true } } },
-          });
-          if (!orphan) continue;
-          const total = g.execs.length;
-          const success = g.execs.filter((x) => x === 'SUCCESS').length;
-          const failed = g.execs.filter((x) => x === 'FAILED').length;
-          const skipped = g.execs.filter((x) => x === 'SKIPPED').length;
-          let status: CalendarEvent['status'];
-          if (success === total) status = 'success';
-          else if (failed === total) status = 'failed';
-          else if (skipped === total) status = 'skipped';
-          else status = 'partial';
-          events.push({
-            id: `exec-${key}`,
-            kind: 'message',
-            scheduleId: orphan.id,
-            occurrenceAt: g.minute.toISOString(),
-            title: orphan.message.name,
-            status,
-            groupCount: total,
-            scheduleType: orphan.type,
-            scheduleStatus: orphan.status,
-            isPast: true,
-            executionStats: { success, failed, skipped, total },
-          });
-          continue;
-        }
+          })
+        : [];
+      const orphanById = new Map(orphans.map((o) => [o.id, o]));
+
+      for (const [key, g] of groups) {
+        const meta =
+          scheduleById.get(g.scheduleId) ??
+          (orphanById.get(g.scheduleId) as
+            | (typeof schedules)[number]
+            | undefined);
+        if (!meta) continue;
         const total = g.execs.length;
         const success = g.execs.filter((x) => x === 'SUCCESS').length;
         const failed = g.execs.filter((x) => x === 'FAILED').length;
@@ -181,13 +165,13 @@ export class CalendarService {
         events.push({
           id: `exec-${key}`,
           kind: 'message',
-          scheduleId: s.id,
+          scheduleId: meta.id,
           occurrenceAt: g.minute.toISOString(),
-          title: s.message.name,
+          title: meta.message.name,
           status,
           groupCount: total,
-          scheduleType: s.type,
-          scheduleStatus: s.status,
+          scheduleType: meta.type,
+          scheduleStatus: meta.status,
           isPast: true,
           executionStats: { success, failed, skipped, total },
         });
@@ -273,15 +257,19 @@ export class CalendarService {
         g.execs.push(e.status);
       }
 
+      const orphanIds = [...new Set([...groups.values()].map((g) => g.scheduleId))].filter(
+        (id) => !scheduleById.has(id),
+      );
+      const orphans = orphanIds.length
+        ? await this.prisma.groupUpdateSchedule.findMany({
+            where: { tenantId, id: { in: orphanIds } },
+          })
+        : [];
+      const orphanById = new Map(orphans.map((o) => [o.id, o]));
+
       for (const [key, g] of groups) {
-        let s = scheduleById.get(g.scheduleId);
-        if (!s) {
-          const orphan = await this.prisma.groupUpdateSchedule.findFirst({
-            where: { id: g.scheduleId },
-          });
-          if (!orphan) continue;
-          s = orphan;
-        }
+        const s = scheduleById.get(g.scheduleId) ?? orphanById.get(g.scheduleId);
+        if (!s) continue;
         const total = g.execs.length;
         const success = g.execs.filter((x) => x === 'SUCCESS').length;
         const failed = g.execs.filter((x) => x === 'FAILED').length;
