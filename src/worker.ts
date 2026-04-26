@@ -20,6 +20,12 @@ import { notifyFailure } from './queue/webhook-notify.util';
 const log = (msg: string, extra?: unknown) =>
   console.log(`[worker] ${msg}`, extra ?? '');
 
+const SEND_DELAY_MIN_MS = 3000;
+const SEND_DELAY_MAX_MS = 7000;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const randomDelay = () =>
+  SEND_DELAY_MIN_MS + Math.floor(Math.random() * (SEND_DELAY_MAX_MS - SEND_DELAY_MIN_MS + 1));
+
 const connection = new IORedis({
   host: process.env.REDIS_HOST ?? 'localhost',
   port: Number(process.env.REDIS_PORT ?? 6379),
@@ -95,7 +101,13 @@ const sendWorker = new Worker<SendMessageJobData>(
       return;
     }
 
-    for (const groupId of targets) {
+    for (let idx = 0; idx < targets.length; idx++) {
+      const groupId = targets[idx];
+      if (idx > 0) {
+        const wait = randomDelay();
+        log(`anti-ban delay ${wait}ms before group ${idx + 1}/${targets.length}`);
+        await sleep(wait);
+      }
       try {
         const mentions = message.mentionAll ? 'all' : undefined;
 
