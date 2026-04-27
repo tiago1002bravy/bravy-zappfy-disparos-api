@@ -300,7 +300,73 @@ export class CalendarService {
       }
     }
 
-    events.sort((a, b) => a.occurrenceAt.localeCompare(b.occurrenceAt));
-    return events;
+    const merged = mergeGroupUpdates(events);
+    merged.sort((a, b) => a.occurrenceAt.localeCompare(b.occurrenceAt));
+    return merged;
   }
+}
+
+function floorMinuteIso(iso: string): string {
+  const d = new Date(iso);
+  d.setSeconds(0, 0);
+  return d.toISOString();
+}
+
+/**
+ * Agrupa eventos kind=group-update que caem no mesmo minuto em um unico card.
+ * O usuario nao quer ver 51 barras simultaneas no calendario; uma so com count consolidado.
+ */
+function mergeGroupUpdates(events: CalendarEvent[]): CalendarEvent[] {
+  const buckets = new Map<string, CalendarEvent[]>();
+  const out: CalendarEvent[] = [];
+  for (const ev of events) {
+    if (ev.kind !== 'group-update') {
+      out.push(ev);
+      continue;
+    }
+    const key = `${ev.isPast ? 'past' : 'future'}|${floorMinuteIso(ev.occurrenceAt)}`;
+    let arr = buckets.get(key);
+    if (!arr) {
+      arr = [];
+      buckets.set(key, arr);
+    }
+    arr.push(ev);
+  }
+  for (const [key, arr] of buckets) {
+    if (arr.length === 1) {
+      out.push(arr[0]);
+      continue;
+    }
+    const totalGroups = arr.reduce((acc, x) => acc + (x.groupCount || 0), 0);
+    const success = arr.reduce((a, x) => a + (x.executionStats?.success ?? 0), 0);
+    const failed = arr.reduce((a, x) => a + (x.executionStats?.failed ?? 0), 0);
+    const skipped = arr.reduce((a, x) => a + (x.executionStats?.skipped ?? 0), 0);
+    const total = arr.reduce((a, x) => a + (x.executionStats?.total ?? 0), 0);
+    const isPast = arr[0].isPast;
+    let status: CalendarEvent['status'];
+    if (isPast) {
+      if (success === total && total > 0) status = 'success';
+      else if (failed === total && total > 0) status = 'failed';
+      else if (skipped === total && total > 0) status = 'skipped';
+      else status = 'partial';
+    } else {
+      const allSkipped = arr.every((x) => x.status === 'skipped');
+      status = allSkipped ? 'skipped' : 'scheduled';
+    }
+    const title = `${arr.length} atualizações de grupo`;
+    out.push({
+      id: `gus-merged-${key}`,
+      kind: 'group-update',
+      scheduleId: arr[0].scheduleId,
+      occurrenceAt: arr[0].occurrenceAt,
+      title,
+      status,
+      groupCount: totalGroups,
+      scheduleType: arr[0].scheduleType,
+      scheduleStatus: arr[0].scheduleStatus,
+      isPast,
+      executionStats: total ? { success, failed, skipped, total } : undefined,
+    });
+  }
+  return out;
 }
