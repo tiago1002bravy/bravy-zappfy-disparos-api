@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { ExecStatus, ScheduleStatus, ScheduleType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { requireTenantId } from '../../common/tenant-context';
@@ -20,7 +20,8 @@ export interface CalendarEvent {
   executionStats?: { success: number; failed: number; skipped: number; total: number };
 }
 
-const MAX_EXPAND = 1000;
+const MAX_EXPAND = 200;
+const MAX_RANGE_DAYS = 92;
 
 function floorMinute(d: Date): Date {
   const x = new Date(d);
@@ -36,6 +37,12 @@ export class CalendarService {
     const tenantId = requireTenantId();
     const events: CalendarEvent[] = [];
     const now = new Date();
+
+    const rangeMs = to.getTime() - from.getTime();
+    const maxRangeMs = MAX_RANGE_DAYS * 24 * 60 * 60 * 1000;
+    if (rangeMs > maxRangeMs) {
+      throw new BadRequestException(`calendar range exceeds ${MAX_RANGE_DAYS} days`);
+    }
 
     const includeMessage = kind === 'all' || kind === 'message';
     const includeGroupUpdate = kind === 'all' || kind === 'group-update';

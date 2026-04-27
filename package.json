@@ -24,6 +24,7 @@
     "@nestjs/passport": "^10.0.3",
     "@nestjs/platform-express": "^10.4.6",
     "@nestjs/swagger": "^7.4.2",
+    "@nestjs/throttler": "^6.5.0",
     "@prisma/client": "^5.22.0",
     "axios": "^1.7.7",
     "bcryptjs": "^3.0.3",
