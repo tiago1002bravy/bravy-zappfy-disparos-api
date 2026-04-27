@@ -2,7 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { ExecStatus, ScheduleStatus, ScheduleType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { requireTenantId } from '../../common/tenant-context';
-import { nextOccurrences } from '../schedules/cron.util';
+import { occurrencesInRange } from '../schedules/cron.util';
 
 export type CalendarKind = 'all' | 'message' | 'group-update';
 
@@ -20,7 +20,6 @@ export interface CalendarEvent {
   executionStats?: { success: number; failed: number; skipped: number; total: number };
 }
 
-const MAX_EXPAND = 200;
 const MAX_RANGE_DAYS = 92;
 
 function floorMinute(d: Date): Date {
@@ -95,10 +94,9 @@ export class CalendarService {
             }
           } else if (s.cron) {
             try {
-              const occs = nextOccurrences(s.cron, MAX_EXPAND, s.timezone, futureFrom);
+              const upperBound = s.endAt && s.endAt < to ? s.endAt : to;
+              const occs = occurrencesInRange(s.cron, futureFrom, upperBound, s.timezone);
               for (const occ of occs) {
-                if (occ > to) break;
-                if (s.endAt && occ > s.endAt) break;
                 events.push({
                   id: `sch-${s.id}-${occ.toISOString()}`,
                   kind: 'message',
@@ -215,9 +213,8 @@ export class CalendarService {
             }
           } else if (s.cron) {
             try {
-              const occs = nextOccurrences(s.cron, MAX_EXPAND, 'America/Sao_Paulo', futureFrom);
+              const occs = occurrencesInRange(s.cron, futureFrom, to, 'America/Sao_Paulo');
               for (const occ of occs) {
-                if (occ > to) break;
                 events.push({
                   id: `gus-${s.id}-${occ.toISOString()}`,
                   kind: 'group-update',
