@@ -14,6 +14,8 @@ interface CreateMessageInput {
   text?: string;
   mentionAll?: boolean;
   medias?: MessageMediaInput[];
+  pollChoices?: string[];
+  pollSelectableCount?: number;
 }
 
 @Injectable()
@@ -30,6 +32,8 @@ export class MessagesService {
         name: dto.name,
         text: dto.text,
         mentionAll: dto.mentionAll ?? true,
+        pollChoices: dto.pollChoices ?? [],
+        pollSelectableCount: dto.pollSelectableCount ?? null,
         medias: dto.medias?.length
           ? {
               create: dto.medias.map((m) => ({
@@ -77,6 +81,8 @@ export class MessagesService {
         name: dto.name,
         text: dto.text,
         mentionAll: dto.mentionAll ?? true,
+        pollChoices: dto.pollChoices ?? [],
+        pollSelectableCount: dto.pollSelectableCount ?? null,
         medias: dto.medias?.length
           ? {
               create: dto.medias.map((m) => ({ mediaId: m.mediaId, order: m.order })),

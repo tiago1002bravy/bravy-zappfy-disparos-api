@@ -1,8 +1,10 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { Queue } from 'bullmq';
+import { FlowProducer, Queue } from 'bullmq';
 import IORedis from 'ioredis';
 import {
   QUEUE_SEND_MESSAGE,
+  QUEUE_SEND_MESSAGE_FINALIZE,
+  QUEUE_SEND_MESSAGE_SINGLE,
   QUEUE_UPDATE_GROUP,
   SendMessageJobData,
   UpdateGroupJobData,
@@ -12,7 +14,10 @@ import {
 export class QueueService implements OnModuleInit, OnModuleDestroy {
   public connection!: IORedis;
   public sendQueue!: Queue<SendMessageJobData>;
+  public sendSingleQueue!: Queue;
+  public sendFinalizeQueue!: Queue;
   public updateQueue!: Queue<UpdateGroupJobData>;
+  public flowProducer!: FlowProducer;
 
   onModuleInit() {
     this.connection = new IORedis({
@@ -22,12 +27,18 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
       maxRetriesPerRequest: null,
     });
     this.sendQueue = new Queue<SendMessageJobData>(QUEUE_SEND_MESSAGE, { connection: this.connection });
+    this.sendSingleQueue = new Queue(QUEUE_SEND_MESSAGE_SINGLE, { connection: this.connection });
+    this.sendFinalizeQueue = new Queue(QUEUE_SEND_MESSAGE_FINALIZE, { connection: this.connection });
     this.updateQueue = new Queue<UpdateGroupJobData>(QUEUE_UPDATE_GROUP, { connection: this.connection });
+    this.flowProducer = new FlowProducer({ connection: this.connection });
   }
 
   async onModuleDestroy() {
     await this.sendQueue?.close();
+    await this.sendSingleQueue?.close();
+    await this.sendFinalizeQueue?.close();
     await this.updateQueue?.close();
+    await this.flowProducer?.close();
     await this.connection?.quit();
   }
 

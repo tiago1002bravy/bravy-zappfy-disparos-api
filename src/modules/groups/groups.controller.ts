@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { ArrayMinSize, IsArray, IsOptional, IsString, MinLength } from 'class-validator';
+import { ArrayMinSize, IsArray, IsBoolean, IsOptional, IsString, MinLength } from 'class-validator';
 import { JwtOrApiKeyGuard } from '../auth/guards/jwt-or-api-key.guard';
 import { TenantInterceptor } from '../../common/interceptors/tenant.interceptor';
 import { GroupsService } from './groups.service';
@@ -22,6 +22,13 @@ class CreateGroupDto {
   @IsOptional() @IsString() instanceToken?: string;
   @IsString() @MinLength(2) name!: string;
   @IsArray() @IsString({ each: true }) participants!: string[];
+}
+
+class AddParticipantsDto {
+  @IsString() @MinLength(8) instanceToken!: string;
+  @IsArray() @ArrayMinSize(1) @IsString({ each: true }) participants!: string[];
+  /** Se true (default), promove os adicionados a admin após adicionar */
+  @IsOptional() @IsBoolean() asAdmin?: boolean;
 }
 
 @ApiTags('groups')
@@ -55,5 +62,10 @@ export class GroupsController {
   @Patch(':id')
   update(@Param('id') id: string, @Body() dto: UpdateGroupDto) {
     return this.svc.updateMetadata(id, dto.instanceToken, dto);
+  }
+
+  @Post(':id/participants')
+  addParticipants(@Param('id') id: string, @Body() dto: AddParticipantsDto) {
+    return this.svc.addParticipants(id, dto.instanceToken, dto.participants, dto.asAdmin ?? true);
   }
 }

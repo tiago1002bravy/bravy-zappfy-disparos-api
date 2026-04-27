@@ -46,6 +46,21 @@ export class GroupsService {
     }
 
     const created = await this.uazapi.createGroup(resolvedInstanceToken, name, mergedParticipants);
+
+    // Promove todos os participantes adicionados na criação a admin (best-effort)
+    if (created.id && mergedParticipants.length > 0) {
+      try {
+        await this.uazapi.updateGroupParticipants(
+          resolvedInstanceToken,
+          created.id,
+          'promote',
+          mergedParticipants,
+        );
+      } catch {
+        // Não falha a criação se a promoção falhar (alguns números podem não estar no grupo ainda)
+      }
+    }
+
     return this.prisma.group.upsert({
       where: {
         tenantId_instanceName_remoteId: {
@@ -167,5 +182,44 @@ export class GroupsService {
         pictureUrl: pictureUrl ?? group.pictureUrl,
       },
     });
+  }
+
+  /**
+   * Adiciona participantes a um grupo. Por padrão, promove todos a admin.
+   */
+  async addParticipants(
+    id: string,
+    instanceToken: string,
+    participants: string[],
+    asAdmin = true,
+  ) {
+    const group = await this.prisma.group.findFirst({ where: { id } });
+    if (!group) throw new NotFoundException('Group not found');
+    if (!participants.length) {
+      throw new BadRequestException('participants must not be empty');
+    }
+
+    const addResp = await this.uazapi.updateGroupParticipants(
+      instanceToken,
+      group.remoteId,
+      'add',
+      participants,
+    );
+
+    let promoteResp: unknown = null;
+    if (asAdmin) {
+      try {
+        promoteResp = await this.uazapi.updateGroupParticipants(
+          instanceToken,
+          group.remoteId,
+          'promote',
+          participants,
+        );
+      } catch (err) {
+        promoteResp = { error: err instanceof Error ? err.message : String(err) };
+      }
+    }
+
+    return { add: addResp, promote: promoteResp };
   }
 }

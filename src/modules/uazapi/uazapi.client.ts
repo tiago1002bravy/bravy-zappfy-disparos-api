@@ -185,4 +185,44 @@ export class UazapiClient {
     });
     return data;
   }
+
+  /**
+   * Envia uma enquete (poll) via /send/menu.
+   * choices: array de opções (strings simples)
+   * selectableCount: quantas opções podem ser marcadas (default 1)
+   */
+  async sendPoll(
+    token: string,
+    opts: {
+      number: string;
+      text: string;
+      choices: string[];
+      selectableCount?: number;
+    },
+  ) {
+    const body: Record<string, unknown> = {
+      number: opts.number,
+      type: 'poll',
+      text: opts.text,
+      choices: opts.choices,
+      selectableCount: opts.selectableCount ?? 1,
+    };
+    const { data } = await this.http(token).post('/send/menu', body);
+    return data;
+  }
+
+  async updateGroupParticipants(
+    token: string,
+    groupId: string,
+    action: 'add' | 'remove' | 'promote' | 'demote' | 'approve' | 'reject',
+    participants: string[],
+  ) {
+    if (!participants.length) return { groupUpdated: [] };
+    const { data } = await this.http(token).post('/group/updateParticipants', {
+      groupjid: groupId,
+      action,
+      participants,
+    });
+    return data;
+  }
 }

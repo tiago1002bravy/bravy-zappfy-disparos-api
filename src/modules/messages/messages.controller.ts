@@ -1,7 +1,7 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { ArrayMinSize, IsArray, IsBoolean, IsInt, IsOptional, IsString, MinLength, ValidateNested } from 'class-validator';
+import { ArrayMinSize, IsArray, IsBoolean, IsInt, IsOptional, IsString, Min, MinLength, ValidateNested } from 'class-validator';
 import { JwtOrApiKeyGuard } from '../auth/guards/jwt-or-api-key.guard';
 import { TenantInterceptor } from '../../common/interceptors/tenant.interceptor';
 import { MessagesService } from './messages.service';
@@ -22,6 +22,9 @@ class CreateMessageDto {
   @ValidateNested({ each: true })
   @Type(() => MessageMediaDto)
   medias?: MessageMediaDto[];
+  /** Se preenchido, a mensagem é uma enquete (texto = pergunta, choices = opções) */
+  @IsOptional() @IsArray() @ArrayMinSize(2) @IsString({ each: true }) pollChoices?: string[];
+  @IsOptional() @IsInt() @Min(1) pollSelectableCount?: number;
 }
 
 class SendNowDto {

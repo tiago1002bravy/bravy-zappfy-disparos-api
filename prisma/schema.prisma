@@ -159,6 +159,9 @@ model Message {
   name        String
   text        String?
   mentionAll  Boolean  @default(true)
+  // Enquete (opcional). Se pollChoices.length > 0, a mensagem é enviada como enquete.
+  pollChoices         String[] @default([])
+  pollSelectableCount Int?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
