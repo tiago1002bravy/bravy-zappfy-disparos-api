@@ -80,13 +80,11 @@ export class MediaService {
     const items = await this.prisma.mediaAsset.findMany({
       orderBy: { createdAt: 'desc' },
     });
-    return Promise.all(
-      items.map(async (m) => ({
-        ...m,
-        url: await this.storage.presignedGetUrl(m.s3Key),
-        thumbUrl: m.thumbKey ? await this.storage.presignedGetUrl(m.thumbKey) : null,
-      })),
-    );
+    return items.map((m) => ({
+      ...m,
+      url: this.storage.buildSignedRawUrl(m.id, 'raw'),
+      thumbUrl: m.thumbKey ? this.storage.buildSignedRawUrl(m.id, 'thumb') : null,
+    }));
   }
 
   async getOne(id: string) {
@@ -94,8 +92,8 @@ export class MediaService {
     if (!m) throw new NotFoundException('Media not found');
     return {
       ...m,
-      url: await this.storage.presignedGetUrl(m.s3Key),
-      thumbUrl: m.thumbKey ? await this.storage.presignedGetUrl(m.thumbKey) : null,
+      url: this.storage.buildSignedRawUrl(m.id, 'raw'),
+      thumbUrl: m.thumbKey ? this.storage.buildSignedRawUrl(m.id, 'thumb') : null,
     };
   }
 
@@ -105,5 +103,31 @@ export class MediaService {
     await this.storage.removeObject(m.s3Key).catch(() => undefined);
     if (m.thumbKey) await this.storage.removeObject(m.thumbKey).catch(() => undefined);
     return this.prisma.mediaAsset.delete({ where: { id } });
+  }
+
+  /**
+   * Endpoint público de proxy: valida assinatura, busca o objeto no MinIO e retorna stream.
+   * Não exige tenant context — assinatura HMAC com TTL faz o gate.
+   */
+  async streamSignedMedia(
+    id: string,
+    expSec: number,
+    variant: 'raw' | 'thumb',
+    sig: string,
+  ): Promise<
+    | { found: true; mime: string; length: number | null; stream: NodeJS.ReadableStream }
+    | { found: false }
+    | null
+  > {
+    if (!this.storage.verifyMediaToken(id, expSec, variant, sig)) return null;
+
+    const m = await this.prisma.mediaAsset.findFirst({ where: { id } });
+    if (!m) return { found: false };
+
+    const key = variant === 'thumb' ? m.thumbKey ?? m.s3Key : m.s3Key;
+    const mime = variant === 'thumb' && m.thumbKey ? 'image/webp' : m.mime;
+    const stream = await this.storage.getObjectStream(key);
+    const length = (stream as { length?: number } | null)?.length ?? null;
+    return { found: true, mime, length, stream };
   }
 }
