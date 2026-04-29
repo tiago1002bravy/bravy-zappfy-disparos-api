@@ -55,13 +55,13 @@ export class GroupUpdateSchedulesService {
     let resolvedInstanceName = dto.instanceName;
     let resolvedInstanceToken = dto.instanceToken;
     if (!resolvedInstanceName || !resolvedInstanceToken) {
-      const conn = await UsersController.resolveConnection(this.prisma, currentUserId(), tenantId);
+      const conn = await UsersController.resolveConnection(this.prisma, currentUserId());
       resolvedInstanceName = resolvedInstanceName || conn?.instanceName || undefined;
       resolvedInstanceToken = resolvedInstanceToken || conn?.instanceToken || undefined;
     }
     if (!resolvedInstanceName || !resolvedInstanceToken) {
       throw new BadRequestException(
-        'No instance provided and no default configured in account settings',
+        'Configure sua conexão WhatsApp em Configurações > Minha conexão antes de disparar.',
       );
     }
 

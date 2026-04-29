@@ -1,8 +1,8 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { requireTenantId } from '../../common/tenant-context';
+import { currentUserId, requireTenantId } from '../../common/tenant-context';
 import { UazapiClient } from '../uazapi/uazapi.client';
-import { TenantsController } from '../tenants/tenants.controller';
+import { UsersController } from '../users/users.controller';
 
 interface CreateInput {
   groupId: string;
@@ -25,20 +25,22 @@ export class ShortlinksService {
    * Usa instância default da conta. Atualiza o shortlink no DB.
    */
   async refresh(id: string) {
-    const tenantId = requireTenantId();
+    requireTenantId();
     const link = await this.prisma.groupShortlink.findFirst({
       where: { id },
       include: { group: true },
     });
     if (!link) throw new NotFoundException('Shortlink not found');
 
-    const defaults = await TenantsController.resolveDefaults(this.prisma, tenantId);
-    if (!defaults?.defaultInstanceToken) {
-      throw new BadRequestException('Configure default instance in account settings to refresh');
+    const conn = await UsersController.resolveConnection(this.prisma, currentUserId());
+    if (!conn) {
+      throw new BadRequestException(
+        'Configure sua conexão WhatsApp em Configurações > Minha conexão antes de atualizar shortlinks.',
+      );
     }
 
     const info = await this.uazapi.getGroupInfo(
-      defaults.defaultInstanceToken,
+      conn.instanceToken,
       link.group.remoteId,
       { getInviteLink: true, force: true },
     );

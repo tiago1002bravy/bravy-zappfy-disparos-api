@@ -49,32 +49,20 @@ export class UsersController {
   }
 
   /**
-   * Helper interno: resolve a conexão do usuário, com fallback pro tenant.
-   * Retorna instance name + token decifrado, ou null se nem o user nem o tenant tem.
+   * Helper interno: resolve a conexão WhatsApp do usuário.
+   * Cada usuário precisa configurar a sua. Sem fallback pro tenant —
+   * compartilhar número entre operadores aumenta o risco de ban no WhatsApp.
    */
   static async resolveConnection(
     prisma: PrismaService,
     userId: string | undefined,
-    tenantId: string,
   ): Promise<{ instanceName: string; instanceToken: string } | null> {
-    if (userId) {
-      const user = await prisma.user.findUnique({ where: { id: userId } });
-      if (user?.instanceName && user.instanceTokenEnc) {
-        return {
-          instanceName: user.instanceName,
-          instanceToken: decryptToken(user.instanceTokenEnc),
-        };
-      }
-    }
-    const t = await prisma.withoutTenant((db) =>
-      db.tenant.findUnique({ where: { id: tenantId } }),
-    );
-    if (t?.defaultInstanceName && t.defaultInstanceTokenEnc) {
-      return {
-        instanceName: t.defaultInstanceName,
-        instanceToken: decryptToken(t.defaultInstanceTokenEnc),
-      };
-    }
-    return null;
+    if (!userId) return null;
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user?.instanceName || !user.instanceTokenEnc) return null;
+    return {
+      instanceName: user.instanceName,
+      instanceToken: decryptToken(user.instanceTokenEnc),
+    };
   }
 }
