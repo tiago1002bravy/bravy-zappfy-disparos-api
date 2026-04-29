@@ -7,3 +7,6 @@ dist
 coverage
 .vscode
 .idea
+
+# Next.js artifacts (leftover from accidental build in this folder)
+.next/
