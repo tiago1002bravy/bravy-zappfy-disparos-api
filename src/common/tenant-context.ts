@@ -21,3 +21,7 @@ export function requireTenantId(): string {
   if (!id) throw new Error('Tenant context missing');
   return id;
 }
+
+export function currentUserId(): string | undefined {
+  return tenantStorage.getStore()?.userId;
+}

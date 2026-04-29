@@ -6,6 +6,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { ApiKeysModule } from './modules/api-keys/api-keys.module';
 import { TenantsModule } from './modules/tenants/tenants.module';
+import { UsersModule } from './modules/users/users.module';
 import { MediaModule } from './modules/media/media.module';
 import { GroupsModule } from './modules/groups/groups.module';
 import { GroupListsModule } from './modules/group-lists/group-lists.module';
@@ -35,6 +36,7 @@ import { RequestLoggerMiddleware } from './common/middleware/request-logger.midd
     AuthModule,
     ApiKeysModule,
     TenantsModule,
+    UsersModule,
     MediaModule,
     GroupsModule,
     GroupListsModule,

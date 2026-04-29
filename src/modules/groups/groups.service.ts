@@ -2,8 +2,9 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { PrismaService } from '../../prisma/prisma.service';
 import { UazapiClient } from '../uazapi/uazapi.client';
 import { StorageService } from '../media/storage.service';
-import { requireTenantId } from '../../common/tenant-context';
+import { currentUserId, requireTenantId } from '../../common/tenant-context';
 import { TenantsController } from '../tenants/tenants.controller';
+import { UsersController } from '../users/users.controller';
 
 @Injectable()
 export class GroupsService {
@@ -27,9 +28,9 @@ export class GroupsService {
     let mergedParticipants = participants;
 
     if (!resolvedInstanceName || !resolvedInstanceToken) {
-      const defaults = await TenantsController.resolveDefaults(this.prisma, tenantId);
-      resolvedInstanceName = resolvedInstanceName || defaults?.defaultInstanceName || undefined;
-      resolvedInstanceToken = resolvedInstanceToken || defaults?.defaultInstanceToken || undefined;
+      const conn = await UsersController.resolveConnection(this.prisma, currentUserId(), tenantId);
+      resolvedInstanceName = resolvedInstanceName || conn?.instanceName || undefined;
+      resolvedInstanceToken = resolvedInstanceToken || conn?.instanceToken || undefined;
     }
 
     if (!resolvedInstanceName || !resolvedInstanceToken) {
@@ -38,7 +39,7 @@ export class GroupsService {
       );
     }
 
-    // Merge default participants
+    // Merge default participants (sempre tenant-level)
     const defaults = await TenantsController.resolveDefaults(this.prisma, tenantId);
     if (defaults?.defaultParticipants?.length) {
       const set = new Set([...participants, ...defaults.defaultParticipants]);
@@ -94,9 +95,9 @@ export class GroupsService {
     let resolvedInstanceName = instanceName;
     let resolvedInstanceToken = instanceToken;
     if (!resolvedInstanceName || !resolvedInstanceToken) {
-      const defaults = await TenantsController.resolveDefaults(this.prisma, tenantId);
-      resolvedInstanceName = resolvedInstanceName || defaults?.defaultInstanceName || undefined;
-      resolvedInstanceToken = resolvedInstanceToken || defaults?.defaultInstanceToken || undefined;
+      const conn = await UsersController.resolveConnection(this.prisma, currentUserId(), tenantId);
+      resolvedInstanceName = resolvedInstanceName || conn?.instanceName || undefined;
+      resolvedInstanceToken = resolvedInstanceToken || conn?.instanceToken || undefined;
     }
     if (!resolvedInstanceName || !resolvedInstanceToken) {
       throw new BadRequestException(

@@ -3,8 +3,8 @@ import { ScheduleStatus, ScheduleType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { encryptToken } from '../../common/crypto.util';
 import { QueueService } from '../../queue/queue.service';
-import { requireTenantId } from '../../common/tenant-context';
-import { TenantsController } from '../tenants/tenants.controller';
+import { currentUserId, requireTenantId } from '../../common/tenant-context';
+import { UsersController } from '../users/users.controller';
 import { dailyToCron, nextOccurrences, validateCron, weeklyToCron } from './cron.util';
 
 interface CreateScheduleInput {
@@ -56,13 +56,13 @@ export class SchedulesService {
       throw new BadRequestException('Provide at least one of groupRemoteIds or groupListIds');
     }
 
-    // Resolve defaults da conta se ausentes
+    // Resolve conexão: explícita do dto > usuário logado > tenant default
     let resolvedInstanceName = dto.instanceName;
     let resolvedInstanceToken = dto.instanceToken;
     if (!resolvedInstanceName || !resolvedInstanceToken) {
-      const defaults = await TenantsController.resolveDefaults(this.prisma, tenantId);
-      resolvedInstanceName = resolvedInstanceName || defaults?.defaultInstanceName || undefined;
-      resolvedInstanceToken = resolvedInstanceToken || defaults?.defaultInstanceToken || undefined;
+      const conn = await UsersController.resolveConnection(this.prisma, currentUserId(), tenantId);
+      resolvedInstanceName = resolvedInstanceName || conn?.instanceName || undefined;
+      resolvedInstanceToken = resolvedInstanceToken || conn?.instanceToken || undefined;
     }
     if (!resolvedInstanceName || !resolvedInstanceToken) {
       throw new BadRequestException(
