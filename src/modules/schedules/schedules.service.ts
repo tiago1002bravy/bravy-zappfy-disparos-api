@@ -103,11 +103,32 @@ export class SchedulesService {
     });
   }
 
-  list() {
-    return this.prisma.schedule.findMany({
+  async list() {
+    const schedules = await this.prisma.schedule.findMany({
       orderBy: { createdAt: 'desc' },
       include: { message: true, _count: { select: { executions: true } } },
     });
+    if (schedules.length === 0) return [];
+    const grouped = await this.prisma.execution.groupBy({
+      by: ['scheduleId', 'status'],
+      where: { scheduleId: { in: schedules.map((s) => s.id) } },
+      _count: { _all: true },
+    });
+    const statsByScheduleId = new Map<string, { success: number; failed: number; skipped: number; total: number }>();
+    for (const row of grouped) {
+      if (!row.scheduleId) continue;
+      const current = statsByScheduleId.get(row.scheduleId) ?? { success: 0, failed: 0, skipped: 0, total: 0 };
+      const count = row._count._all;
+      if (row.status === 'SUCCESS') current.success += count;
+      else if (row.status === 'FAILED') current.failed += count;
+      else if (row.status === 'SKIPPED') current.skipped += count;
+      current.total += count;
+      statsByScheduleId.set(row.scheduleId, current);
+    }
+    return schedules.map((s) => ({
+      ...s,
+      executionStats: statsByScheduleId.get(s.id) ?? { success: 0, failed: 0, skipped: 0, total: 0 },
+    }));
   }
 
   async getOne(id: string) {
