@@ -37,6 +37,30 @@ enum Role {
   OPERATOR
 }
 
+enum WorkspaceRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model WorkspaceRequest {
+  id                String                 @id @default(cuid())
+  name              String
+  slug              String
+  requesterName     String
+  requesterEmail    String
+  passwordHash      String
+  reason            String?
+  status            WorkspaceRequestStatus @default(PENDING)
+  createdAt         DateTime               @default(now())
+  reviewedAt        DateTime?
+  reviewedByEmail   String?
+  rejectionReason   String?
+  createdTenantId   String?
+
+  @@index([status, createdAt])
+}
+
 model User {
   id        String   @id @default(cuid())
   tenantId  String
@@ -89,8 +113,13 @@ model Group {
   memberships  GroupListMembership[]
   shortlinks   GroupShortlink[]
 
+  // false quando o sync detectou que o grupo nao existe mais na instancia
+  // (preserva historico de shortlinks, schedules etc; UI filtra por padrao)
+  active Boolean @default(true)
+
   @@unique([tenantId, instanceName, remoteId])
   @@index([tenantId, name])
+  @@index([tenantId, instanceName, active])
 }
 
 model GroupShortlink {

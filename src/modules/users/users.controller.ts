@@ -22,6 +22,7 @@ import { TenantInterceptor } from '../../common/interceptors/tenant.interceptor'
 import { PrismaService } from '../../prisma/prisma.service';
 import { CurrentUser, AuthUser } from '../../common/decorators/current-user.decorator';
 import { encryptToken, decryptToken } from '../../common/crypto.util';
+import { WorkspaceRequestsController } from '../workspace-requests/workspace-requests.controller';
 
 class UpdateConnectionDto {
   @IsOptional() @IsString() instanceName?: string | null;
@@ -62,6 +63,7 @@ export class UsersController {
       role: user.role,
       instanceName: user.instanceName,
       hasInstanceToken: !!user.instanceTokenEnc,
+      isSuperAdmin: WorkspaceRequestsController.isSuperAdmin(user.email),
     };
   }
 

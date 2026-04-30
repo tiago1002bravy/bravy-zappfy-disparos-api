@@ -7,6 +7,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { ApiKeysModule } from './modules/api-keys/api-keys.module';
 import { TenantsModule } from './modules/tenants/tenants.module';
 import { UsersModule } from './modules/users/users.module';
+import { WorkspaceRequestsModule } from './modules/workspace-requests/workspace-requests.module';
 import { MediaModule } from './modules/media/media.module';
 import { GroupsModule } from './modules/groups/groups.module';
 import { GroupListsModule } from './modules/group-lists/group-lists.module';
@@ -37,6 +38,7 @@ import { RequestLoggerMiddleware } from './common/middleware/request-logger.midd
     ApiKeysModule,
     TenantsModule,
     UsersModule,
+    WorkspaceRequestsModule,
     MediaModule,
     GroupsModule,
     GroupListsModule,

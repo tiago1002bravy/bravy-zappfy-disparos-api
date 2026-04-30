@@ -105,10 +105,11 @@ export class GroupsService {
       );
     }
     const remote = await this.uazapi.listGroups(resolvedInstanceToken);
+    const remoteIds = new Set(remote.map((g) => g.id));
 
-    // upsert cada grupo
+    // 1. Upsert cada grupo presente na instancia, marcando active=true
     const now = new Date();
-    const ops = remote.map((g) =>
+    const upserts = remote.map((g) =>
       this.prisma.group.upsert({
         where: {
           tenantId_instanceName_remoteId: {
@@ -126,6 +127,7 @@ export class GroupsService {
           pictureUrl: g.pictureUrl,
           participantsCount: g.participantsCount,
           syncedAt: now,
+          active: true,
         },
         update: {
           name: g.name,
@@ -133,17 +135,44 @@ export class GroupsService {
           pictureUrl: g.pictureUrl,
           participantsCount: g.participantsCount,
           syncedAt: now,
+          active: true,
         },
       }),
     );
-    await this.prisma.$transaction(ops);
+
+    // 2. Marca como inactive os grupos que nao vieram no sync (usuario saiu/grupo
+    //    foi deletado). Soft-delete preserva shortlinks, schedules, historico.
+    const deactivate = this.prisma.group.updateMany({
+      where: {
+        tenantId,
+        instanceName: resolvedInstanceName!,
+        remoteId: { notIn: Array.from(remoteIds) },
+        active: true,
+      },
+      data: { active: false },
+    });
+
+    await this.prisma.$transaction([...upserts, deactivate]);
 
     return this.list(resolvedInstanceName);
   }
 
-  list(instanceName?: string) {
+  /**
+   * Lista grupos ativos. Por padrao filtra pela instancia do usuario logado
+   * (cada operador so ve os proprios grupos). Passe `instanceName` pra
+   * sobrescrever ou `includeInactive=true` pra ver historico completo.
+   */
+  async list(instanceName?: string, includeInactive = false) {
+    let scopeInstance = instanceName;
+    if (!scopeInstance) {
+      const conn = await UsersController.resolveConnection(this.prisma, currentUserId());
+      scopeInstance = conn?.instanceName;
+    }
     return this.prisma.group.findMany({
-      where: instanceName ? { instanceName } : undefined,
+      where: {
+        ...(scopeInstance ? { instanceName: scopeInstance } : {}),
+        ...(includeInactive ? {} : { active: true }),
+      },
       orderBy: { name: 'asc' },
     });
   }
