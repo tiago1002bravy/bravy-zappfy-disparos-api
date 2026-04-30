@@ -63,6 +63,17 @@ export class TenantsController {
     };
   }
 
+  /** Sinaliza pra UI os defaults disponíveis (apenas participantes — instância é por usuário). */
+  @Get('defaults')
+  async defaults(@CurrentUser() u: AuthUser) {
+    const t = await this.prisma.withoutTenant((db) =>
+      db.tenant.findUnique({ where: { id: u.tenantId } }),
+    );
+    return {
+      defaultParticipants: t?.defaultParticipants ?? [],
+    };
+  }
+
   /** Helper interno: pega participantes padrao do tenant (used pra criar grupos). */
   static async resolveDefaults(prisma: PrismaService, tenantId: string) {
     const t = await prisma.withoutTenant((db) => db.tenant.findUnique({ where: { id: tenantId } }));
