@@ -16,6 +16,7 @@ import {
 import type { Response } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiTags } from '@nestjs/swagger';
+import { SkipThrottle } from '@nestjs/throttler';
 import { JwtOrApiKeyGuard } from '../auth/guards/jwt-or-api-key.guard';
 import { TenantInterceptor } from '../../common/interceptors/tenant.interceptor';
 import { MediaService } from './media.service';
@@ -29,6 +30,7 @@ export class MediaController {
   // Auth via assinatura HMAC na query string. Permite <img src> sem expor MinIO.
   // Definido ANTES de outros @Get pra que NestJS combine a rota mais específica primeiro.
   @Get('raw/:id')
+  @SkipThrottle()
   async streamRaw(
     @Param('id') id: string,
     @Query('exp') exp: string,
