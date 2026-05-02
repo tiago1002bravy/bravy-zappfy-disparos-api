@@ -60,8 +60,8 @@ export class MediaController {
   @UseGuards(JwtOrApiKeyGuard)
   @UseInterceptors(TenantInterceptor)
   @ApiBearerAuth()
-  list() {
-    return this.svc.list();
+  list(@Query('includeDeleted') includeDeleted?: string) {
+    return this.svc.list({ includeDeleted: includeDeleted === 'true' });
   }
 
   @Get(':id')

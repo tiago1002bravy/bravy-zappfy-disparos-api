@@ -76,8 +76,9 @@ export class MediaService {
     });
   }
 
-  async list() {
+  async list(opts: { includeDeleted?: boolean } = {}) {
     const items = await this.prisma.mediaAsset.findMany({
+      where: opts.includeDeleted ? {} : { deletedAt: null },
       orderBy: { createdAt: 'desc' },
     });
     return items.map((m) => ({
@@ -97,12 +98,19 @@ export class MediaService {
     };
   }
 
+  /**
+   * Soft-delete: oculta a mídia do listing mas NUNCA remove do MinIO.
+   * Política do tenant é preservar todos os arquivos pra sempre. Pra reverter,
+   * basta nullify o deletedAt no banco.
+   */
   async remove(id: string) {
     const m = await this.prisma.mediaAsset.findFirst({ where: { id } });
     if (!m) throw new NotFoundException('Media not found');
-    await this.storage.removeObject(m.s3Key).catch(() => undefined);
-    if (m.thumbKey) await this.storage.removeObject(m.thumbKey).catch(() => undefined);
-    return this.prisma.mediaAsset.delete({ where: { id } });
+    if (m.deletedAt) return m;
+    return this.prisma.mediaAsset.update({
+      where: { id },
+      data: { deletedAt: new Date() },
+    });
   }
 
   /**

@@ -277,12 +277,16 @@ model MediaAsset {
   mime      String
   size      Int
   thumbKey  String?
+  // Soft-delete: politica do tenant é nunca apagar objetos do MinIO.
+  // DELETE /media/:id apenas seta deletedAt e oculta do listing.
+  deletedAt DateTime?
   createdAt DateTime @default(now())
 
   tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   messageMedias MessageMedia[]
 
   @@index([tenantId])
+  @@index([tenantId, deletedAt])
 }
 
 model Message {
