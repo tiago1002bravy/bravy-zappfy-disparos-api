@@ -158,7 +158,12 @@ export class UazapiClient {
       id: String(g?.JID ?? g?.id ?? groupId),
       name: String(g?.Name ?? g?.name ?? ''),
       participants: numbers,
-      inviteLink: (g?.InviteLink as string) ?? (data?.inviteLink as string) ?? undefined,
+      inviteLink:
+        (g?.invite_link as string) ??
+        (g?.InviteLink as string) ??
+        (g?.inviteLink as string) ??
+        (data?.inviteLink as string) ??
+        undefined,
     };
   }
 
