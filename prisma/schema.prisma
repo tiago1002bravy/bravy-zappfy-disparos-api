@@ -16,6 +16,12 @@ model Tenant {
   defaultInstanceName     String?
   defaultInstanceTokenEnc String?
   defaultParticipants     String[] @default([])
+  // Defaults aplicados em todo grupo criado (front/api/mcp). Override por chamada.
+  defaultGroupAdmins      String[] @default([])
+  defaultGroupDescription String?
+  defaultGroupPictureMediaId String?
+  defaultGroupLocked      Boolean  @default(true)
+  defaultGroupAnnounce    Boolean  @default(true)
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
 

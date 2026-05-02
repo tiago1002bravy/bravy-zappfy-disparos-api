@@ -191,6 +191,24 @@ export class UazapiClient {
     return data;
   }
 
+  /** locked=true → só admins editam info do grupo (nome/foto/descrição). */
+  async updateGroupLocked(token: string, groupId: string, locked: boolean) {
+    const { data } = await this.http(token).post('/group/updateLocked', {
+      groupjid: groupId,
+      locked,
+    });
+    return data;
+  }
+
+  /** announce=true → só admins enviam mensagem no grupo. */
+  async updateGroupAnnounce(token: string, groupId: string, announce: boolean) {
+    const { data } = await this.http(token).post('/group/updateAnnounce', {
+      groupjid: groupId,
+      announce,
+    });
+    return data;
+  }
+
   /**
    * Envia uma enquete (poll) via /send/menu.
    * choices: array de opções (strings simples)

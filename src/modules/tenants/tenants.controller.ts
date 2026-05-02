@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Patch, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { IsArray, IsOptional, IsString, IsUrl } from 'class-validator';
+import { IsArray, IsBoolean, IsOptional, IsString, IsUrl } from 'class-validator';
 import { JwtOrApiKeyGuard } from '../auth/guards/jwt-or-api-key.guard';
 import { TenantInterceptor } from '../../common/interceptors/tenant.interceptor';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -10,6 +10,14 @@ class UpdateTenantDto {
   @IsOptional() @IsString() timezone?: string;
   @IsOptional() @IsUrl({ require_protocol: true }) failureWebhookUrl?: string | null;
   @IsOptional() @IsArray() @IsString({ each: true }) defaultParticipants?: string[];
+}
+
+class UpdateGroupDefaultsDto {
+  @IsOptional() @IsArray() @IsString({ each: true }) defaultGroupAdmins?: string[];
+  @IsOptional() @IsString() defaultGroupDescription?: string | null;
+  @IsOptional() @IsString() defaultGroupPictureMediaId?: string | null;
+  @IsOptional() @IsBoolean() defaultGroupLocked?: boolean;
+  @IsOptional() @IsBoolean() defaultGroupAnnounce?: boolean;
 }
 
 @ApiTags('tenant')
@@ -36,6 +44,11 @@ export class TenantsController {
       timezone: t.timezone,
       failureWebhookUrl: t.failureWebhookUrl,
       defaultParticipants: t.defaultParticipants,
+      defaultGroupAdmins: t.defaultGroupAdmins,
+      defaultGroupDescription: t.defaultGroupDescription,
+      defaultGroupPictureMediaId: t.defaultGroupPictureMediaId,
+      defaultGroupLocked: t.defaultGroupLocked,
+      defaultGroupAnnounce: t.defaultGroupAnnounce,
     };
   }
 
@@ -71,6 +84,40 @@ export class TenantsController {
     );
     return {
       defaultParticipants: t?.defaultParticipants ?? [],
+      defaultGroupAdmins: t?.defaultGroupAdmins ?? [],
+      defaultGroupDescription: t?.defaultGroupDescription ?? null,
+      defaultGroupPictureMediaId: t?.defaultGroupPictureMediaId ?? null,
+      defaultGroupLocked: t?.defaultGroupLocked ?? true,
+      defaultGroupAnnounce: t?.defaultGroupAnnounce ?? true,
+    };
+  }
+
+  /** Atualiza os defaults usados em todo grupo criado (front/api/mcp). */
+  @Patch('group-defaults')
+  async updateGroupDefaults(@CurrentUser() u: AuthUser, @Body() dto: UpdateGroupDefaultsDto) {
+    const data: Record<string, unknown> = {};
+    if (dto.defaultGroupAdmins !== undefined) {
+      data.defaultGroupAdmins = dto.defaultGroupAdmins
+        .flatMap((p) => p.split(/[\s,;]+/))
+        .map((p) => p.replace(/\D/g, ''))
+        .filter((p) => p.length >= 10 && p.length <= 15);
+    }
+    if (dto.defaultGroupDescription !== undefined)
+      data.defaultGroupDescription = dto.defaultGroupDescription;
+    if (dto.defaultGroupPictureMediaId !== undefined)
+      data.defaultGroupPictureMediaId = dto.defaultGroupPictureMediaId;
+    if (dto.defaultGroupLocked !== undefined) data.defaultGroupLocked = dto.defaultGroupLocked;
+    if (dto.defaultGroupAnnounce !== undefined)
+      data.defaultGroupAnnounce = dto.defaultGroupAnnounce;
+    const t = await this.prisma.withoutTenant((db) =>
+      db.tenant.update({ where: { id: u.tenantId }, data }),
+    );
+    return {
+      defaultGroupAdmins: t.defaultGroupAdmins,
+      defaultGroupDescription: t.defaultGroupDescription,
+      defaultGroupPictureMediaId: t.defaultGroupPictureMediaId,
+      defaultGroupLocked: t.defaultGroupLocked,
+      defaultGroupAnnounce: t.defaultGroupAnnounce,
     };
   }
 

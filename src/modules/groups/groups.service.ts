@@ -19,6 +19,7 @@ export class GroupsService {
     instanceToken: string | undefined,
     name: string,
     participants: string[],
+    opts: { applyDefaults?: boolean } = {},
   ) {
     const tenantId = requireTenantId();
 
@@ -62,7 +63,7 @@ export class GroupsService {
       }
     }
 
-    return this.prisma.group.upsert({
+    const row = await this.prisma.group.upsert({
       where: {
         tenantId_instanceName_remoteId: {
           tenantId,
@@ -88,6 +89,11 @@ export class GroupsService {
         syncedAt: new Date(),
       },
     });
+
+    if (opts.applyDefaults !== false) {
+      await this.applyTenantDefaults(resolvedInstanceToken, row.remoteId);
+    }
+    return row;
   }
 
   async sync(instanceName?: string, instanceToken?: string) {
@@ -251,5 +257,331 @@ export class GroupsService {
     }
 
     return { add: addResp, promote: promoteResp };
+  }
+
+  // ====== permissões ======
+
+  async setPermissions(
+    id: string,
+    instanceToken: string,
+    opts: { locked?: boolean; announce?: boolean },
+  ) {
+    const group = await this.prisma.group.findFirst({ where: { id } });
+    if (!group) throw new NotFoundException('Group not found');
+    const out: Record<string, unknown> = {};
+    if (opts.locked !== undefined) {
+      out.locked = await this.uazapi.updateGroupLocked(instanceToken, group.remoteId, opts.locked);
+    }
+    if (opts.announce !== undefined) {
+      out.announce = await this.uazapi.updateGroupAnnounce(
+        instanceToken,
+        group.remoteId,
+        opts.announce,
+      );
+    }
+    return out;
+  }
+
+  // ====== foto direta (mediaId | dataUri | publicUrl) ======
+
+  async setPicture(
+    id: string,
+    instanceToken: string,
+    source: { mediaId?: string; dataUri?: string; imageUrl?: string },
+  ) {
+    const group = await this.prisma.group.findFirst({ where: { id } });
+    if (!group) throw new NotFoundException('Group not found');
+    const payload = await this.resolvePictureSource(source);
+    if (!payload) throw new BadRequestException('Provide mediaId | dataUri | imageUrl');
+    await this.uazapi.updateGroupPicture(instanceToken, group.remoteId, payload);
+    return { ok: true };
+  }
+
+  // ====== participantes (promote/demote/remove) ======
+
+  async updateParticipants(
+    id: string,
+    instanceToken: string,
+    action: 'add' | 'remove' | 'promote' | 'demote',
+    participants: string[],
+  ) {
+    const group = await this.prisma.group.findFirst({ where: { id } });
+    if (!group) throw new NotFoundException('Group not found');
+    if (!participants.length) {
+      throw new BadRequestException('participants must not be empty');
+    }
+    return this.uazapi.updateGroupParticipants(instanceToken, group.remoteId, action, participants);
+  }
+
+  // ====== bulk: criar N grupos sequenciais (ex: #5 .. #14) ======
+
+  async bulkCreate(input: {
+    nameTemplate: string; // ex: "🎁 AULÃO HOJE 20H! #{N}"
+    startNumber: number;
+    count: number;
+    instanceName?: string;
+    instanceToken?: string;
+    initialParticipants?: string[];
+    applyDefaults?: boolean;
+    delayMs?: number; // delay entre grupos (default 8000)
+    alsoCreateList?: { name: string; color?: string };
+    alsoCreateShortlink?: {
+      slug: string;
+      notes?: string;
+      strategy?: 'SEQUENTIAL' | 'ROUND_ROBIN' | 'RANDOM';
+      hardCap?: number;
+      initialClickBudget?: number;
+    };
+  }) {
+    const tenantId = requireTenantId();
+    if (input.count < 1 || input.count > 50) {
+      throw new BadRequestException('count deve estar entre 1 e 50');
+    }
+    if (!input.nameTemplate.includes('{N}')) {
+      throw new BadRequestException('nameTemplate precisa ter o placeholder {N}');
+    }
+
+    let resolvedInstanceName = input.instanceName;
+    let resolvedInstanceToken = input.instanceToken;
+    if (!resolvedInstanceName || !resolvedInstanceToken) {
+      const conn = await UsersController.resolveConnection(this.prisma, currentUserId());
+      resolvedInstanceName = resolvedInstanceName || conn?.instanceName || undefined;
+      resolvedInstanceToken = resolvedInstanceToken || conn?.instanceToken || undefined;
+    }
+    if (!resolvedInstanceName || !resolvedInstanceToken) {
+      throw new BadRequestException('Sem conexão WhatsApp configurada');
+    }
+
+    const created: Array<{ id: string; remoteId: string; name: string; n: number }> = [];
+    const failures: Array<{ n: number; error: string }> = [];
+    const delay = input.delayMs ?? 8000;
+    const partsBase = input.initialParticipants ?? [];
+
+    for (let i = 0; i < input.count; i++) {
+      const n = input.startNumber + i;
+      const name = input.nameTemplate.replace('{N}', String(n));
+      try {
+        const row = await this.createGroup(
+          resolvedInstanceName,
+          resolvedInstanceToken,
+          name,
+          partsBase,
+          { applyDefaults: input.applyDefaults !== false },
+        );
+        created.push({ id: row.id, remoteId: row.remoteId, name: row.name, n });
+      } catch (e) {
+        failures.push({ n, error: (e as Error).message });
+      }
+      if (i < input.count - 1) await this.sleep(delay);
+    }
+
+    let groupListId: string | undefined;
+    if (input.alsoCreateList && created.length) {
+      try {
+        const list = await this.prisma.groupList.create({
+          data: {
+            tenantId,
+            name: input.alsoCreateList.name,
+            color: input.alsoCreateList.color,
+            memberships: {
+              create: created.map((g) => ({ groupId: g.id })),
+            },
+          },
+        });
+        groupListId = list.id;
+      } catch (e) {
+        failures.push({ n: -1, error: 'createList: ' + (e as Error).message });
+      }
+    }
+
+    let shortlinkId: string | undefined;
+    if (input.alsoCreateShortlink && created.length) {
+      try {
+        const sl = await this.prisma.groupShortlink.create({
+          data: {
+            tenantId,
+            slug: input.alsoCreateShortlink.slug.toLowerCase().trim(),
+            notes: input.alsoCreateShortlink.notes,
+            strategy: input.alsoCreateShortlink.strategy ?? 'SEQUENTIAL',
+            hardCap: input.alsoCreateShortlink.hardCap ?? 900,
+            initialClickBudget: input.alsoCreateShortlink.initialClickBudget ?? 800,
+            items: {
+              create: created.map((g, idx) => ({
+                groupId: g.id,
+                order: idx,
+                nextCheckAtClicks: input.alsoCreateShortlink!.initialClickBudget ?? 800,
+              })),
+            },
+          },
+        });
+        shortlinkId = sl.id;
+      } catch (e) {
+        failures.push({ n: -1, error: 'createShortlink: ' + (e as Error).message });
+      }
+    }
+
+    return {
+      created,
+      failures,
+      groupListId,
+      shortlinkId,
+    };
+  }
+
+  // ====== bulk: aplicar config em N grupos ======
+
+  async bulkApply(
+    instanceToken: string,
+    input: {
+      groupIds: string[];
+      description?: string;
+      pictureMediaId?: string;
+      pictureDataUri?: string;
+      pictureUrl?: string;
+      locked?: boolean;
+      announce?: boolean;
+      addAdmins?: string[];
+      delayMs?: number;
+    },
+  ) {
+    if (!input.groupIds.length) throw new BadRequestException('groupIds vazio');
+    const groups = await this.prisma.group.findMany({ where: { id: { in: input.groupIds } } });
+    if (groups.length !== input.groupIds.length) {
+      throw new BadRequestException('Algum groupId inválido');
+    }
+
+    const picPayload = await this.resolvePictureSource({
+      mediaId: input.pictureMediaId,
+      dataUri: input.pictureDataUri,
+      imageUrl: input.pictureUrl,
+    });
+
+    const delay = input.delayMs ?? 8000;
+    const results: Array<{ id: string; name: string; ok: boolean; errors: string[] }> = [];
+
+    for (let i = 0; i < groups.length; i++) {
+      const g = groups[i];
+      const errors: string[] = [];
+      const tryStep = async (label: string, fn: () => Promise<unknown>) => {
+        try {
+          await fn();
+        } catch (e) {
+          errors.push(label + ': ' + (e as Error).message);
+        }
+      };
+      if (input.description !== undefined) {
+        await tryStep('description', () =>
+          this.uazapi.updateGroupDescription(instanceToken, g.remoteId, input.description!),
+        );
+        await this.sleep(2000);
+      }
+      if (input.addAdmins?.length) {
+        await tryStep('add_admins', () =>
+          this.uazapi.updateGroupParticipants(instanceToken, g.remoteId, 'add', input.addAdmins!),
+        );
+        await this.sleep(3000);
+        await tryStep('promote', () =>
+          this.uazapi.updateGroupParticipants(
+            instanceToken,
+            g.remoteId,
+            'promote',
+            input.addAdmins!,
+          ),
+        );
+        await this.sleep(2000);
+      }
+      if (picPayload) {
+        await tryStep('picture', () =>
+          this.uazapi.updateGroupPicture(instanceToken, g.remoteId, picPayload),
+        );
+        await this.sleep(2000);
+      }
+      if (input.locked !== undefined) {
+        await tryStep('locked', () =>
+          this.uazapi.updateGroupLocked(instanceToken, g.remoteId, input.locked!),
+        );
+        await this.sleep(2000);
+      }
+      if (input.announce !== undefined) {
+        await tryStep('announce', () =>
+          this.uazapi.updateGroupAnnounce(instanceToken, g.remoteId, input.announce!),
+        );
+      }
+      results.push({ id: g.id, name: g.name, ok: errors.length === 0, errors });
+      if (i < groups.length - 1) await this.sleep(delay);
+    }
+
+    return { results };
+  }
+
+  // ====== helpers ======
+
+  private async applyTenantDefaults(instanceToken: string, remoteId: string) {
+    const tenantId = requireTenantId();
+    const t = await this.prisma.tenant.findUnique({ where: { id: tenantId } });
+    if (!t) return;
+
+    const tryStep = async (fn: () => Promise<unknown>) => {
+      try {
+        await fn();
+      } catch {
+        // best-effort
+      }
+    };
+
+    if (t.defaultGroupAdmins.length) {
+      await tryStep(() =>
+        this.uazapi.updateGroupParticipants(instanceToken, remoteId, 'add', t.defaultGroupAdmins),
+      );
+      await this.sleep(3000);
+      await tryStep(() =>
+        this.uazapi.updateGroupParticipants(
+          instanceToken,
+          remoteId,
+          'promote',
+          t.defaultGroupAdmins,
+        ),
+      );
+      await this.sleep(2000);
+    }
+    if (t.defaultGroupDescription) {
+      await tryStep(() =>
+        this.uazapi.updateGroupDescription(instanceToken, remoteId, t.defaultGroupDescription!),
+      );
+      await this.sleep(2000);
+    }
+    if (t.defaultGroupPictureMediaId) {
+      const dataUri = await this.resolvePictureSource({ mediaId: t.defaultGroupPictureMediaId });
+      if (dataUri) {
+        await tryStep(() => this.uazapi.updateGroupPicture(instanceToken, remoteId, dataUri));
+        await this.sleep(2000);
+      }
+    }
+    if (t.defaultGroupLocked) {
+      await tryStep(() => this.uazapi.updateGroupLocked(instanceToken, remoteId, true));
+      await this.sleep(2000);
+    }
+    if (t.defaultGroupAnnounce) {
+      await tryStep(() => this.uazapi.updateGroupAnnounce(instanceToken, remoteId, true));
+    }
+  }
+
+  private async resolvePictureSource(source: {
+    mediaId?: string;
+    dataUri?: string;
+    imageUrl?: string;
+  }): Promise<string | null> {
+    if (source.dataUri) return source.dataUri;
+    if (source.imageUrl) return source.imageUrl;
+    if (source.mediaId) {
+      const media = await this.prisma.mediaAsset.findFirst({ where: { id: source.mediaId } });
+      if (!media) throw new NotFoundException('Media not found');
+      return this.storage.objectAsDataUri(media.s3Key, media.mime);
+    }
+    return null;
+  }
+
+  private sleep(ms: number) {
+    return new Promise((r) => setTimeout(r, ms));
   }
 }
