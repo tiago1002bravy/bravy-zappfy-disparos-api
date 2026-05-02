@@ -30,7 +30,7 @@ export class MediaController {
   // Auth via assinatura HMAC na query string. Permite <img src> sem expor MinIO.
   // Definido ANTES de outros @Get pra que NestJS combine a rota mais específica primeiro.
   @Get('raw/:id')
-  @SkipThrottle()
+  @SkipThrottle({ default: true, short: true })
   async streamRaw(
     @Param('id') id: string,
     @Query('exp') exp: string,
