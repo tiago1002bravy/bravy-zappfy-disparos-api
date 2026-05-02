@@ -107,17 +107,15 @@ export class MessagesService {
     });
   }
 
-  private async withUrls<T extends { medias?: { media: { s3Key: string; thumbKey: string | null } }[] }>(
+  private async withUrls<T extends { medias?: { media: { id: string; s3Key: string; thumbKey: string | null } }[] }>(
     m: T,
   ) {
     if (!m.medias) return m;
-    const medias = await Promise.all(
-      m.medias.map(async (mm) => ({
-        ...mm,
-        url: await this.storage.presignedGetUrl(mm.media.s3Key),
-        thumbUrl: mm.media.thumbKey ? await this.storage.presignedGetUrl(mm.media.thumbKey) : null,
-      })),
-    );
+    const medias = m.medias.map((mm) => ({
+      ...mm,
+      url: this.storage.buildSignedRawUrl(mm.media.id, 'raw'),
+      thumbUrl: mm.media.thumbKey ? this.storage.buildSignedRawUrl(mm.media.id, 'thumb') : null,
+    }));
     return { ...m, medias };
   }
 }
