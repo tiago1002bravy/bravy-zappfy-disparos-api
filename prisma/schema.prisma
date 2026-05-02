@@ -109,9 +109,9 @@ model Group {
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
-  tenant       Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  memberships  GroupListMembership[]
-  shortlinks   GroupShortlink[]
+  tenant         Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  memberships    GroupListMembership[]
+  shortlinkItems GroupShortlinkItem[]
 
   // false quando o sync detectou que o grupo nao existe mais na instancia
   // (preserva historico de shortlinks, schedules etc; UI filtra por padrao)
@@ -123,24 +123,118 @@ model Group {
 }
 
 model GroupShortlink {
-  id                String    @id @default(cuid())
-  tenantId          String
-  groupId           String
-  slug              String    @unique
-  currentInviteUrl  String?
-  lastRefreshedAt   DateTime?
-  active            Boolean   @default(true)
-  clicks            Int       @default(0)
-  lastClickedAt     DateTime?
-  notes             String?
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  id          String   @id @default(cuid())
+  tenantId    String
+  slug        String   @unique
+  active      Boolean  @default(true)
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  group  Group  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  // Rotacao
+  strategy           ShortlinkStrategy @default(SEQUENTIAL)
+  // Limite "duro" do grupo no WhatsApp — quando participantsCount >= hardCap, marca FULL
+  hardCap            Int               @default(900)
+  // Quantos cliques aguentar ANTES do primeiro recheck via Uazapi
+  initialClickBudget Int               @default(800)
+  // Fonte primaria de capacidade
+  capacitySource     CapacitySource    @default(UAZAPI)
+
+  // Auto-criacao quando todos lotam
+  autoCreate         Boolean @default(false)
+  autoCreateInstance String?
+  autoCreateTemplate String? // padrao: "Grupo {N}"
+
+  // Totais agregados
+  clicks        Int       @default(0)
+  lastClickedAt DateTime?
+
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant     Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  items      GroupShortlinkItem[]
+  clickLog   GroupShortlinkClick[]
+  events     GroupShortlinkEvent[]
 
   @@index([tenantId])
-  @@index([groupId])
+}
+
+model GroupShortlinkItem {
+  id          String              @id @default(cuid())
+  shortlinkId String
+  groupId     String
+  order       Int
+  status      ShortlinkItemStatus @default(ACTIVE)
+
+  currentInviteUrl String?
+  lastRefreshedAt  DateTime?
+
+  // Contadores e ciclo de capacidade
+  clicks            Int       @default(0)
+  lastClickedAt     DateTime?
+  participantsCount Int?
+  lastCheckedAt     DateTime?
+  // Quando clicks >= nextCheckAtClicks, dispara recheck de capacidade
+  nextCheckAtClicks Int       @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  shortlink GroupShortlink @relation(fields: [shortlinkId], references: [id], onDelete: Cascade)
+  group     Group          @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([shortlinkId, groupId])
+  @@index([shortlinkId, status, order])
+}
+
+model GroupShortlinkClick {
+  id          String   @id @default(cuid())
+  shortlinkId String
+  itemId      String?
+  ip          String?
+  userAgent   String?
+  country     String?
+  countryCode String?
+  region      String?
+  city        String?
+  geoResolved Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  shortlink GroupShortlink @relation(fields: [shortlinkId], references: [id], onDelete: Cascade)
+
+  @@index([shortlinkId, createdAt])
+  @@index([geoResolved, createdAt])
+}
+
+model GroupShortlinkEvent {
+  id          String   @id @default(cuid())
+  shortlinkId String
+  itemId      String?
+  type        String // recheck | promote_full | auto_create | uazapi_error | no_active_item | invite_refresh
+  payload     Json?
+  createdAt   DateTime @default(now())
+
+  shortlink GroupShortlink @relation(fields: [shortlinkId], references: [id], onDelete: Cascade)
+
+  @@index([shortlinkId, createdAt])
+  @@index([type, createdAt])
+}
+
+enum ShortlinkStrategy {
+  SEQUENTIAL
+  ROUND_ROBIN
+  RANDOM
+}
+
+enum CapacitySource {
+  UAZAPI
+  CLICK_COUNT
+}
+
+enum ShortlinkItemStatus {
+  ACTIVE
+  FULL
+  INVALID
+  DISABLED
 }
 
 model GroupList {
