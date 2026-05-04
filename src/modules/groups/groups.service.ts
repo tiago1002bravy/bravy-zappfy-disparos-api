@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { UazapiClient } from '../uazapi/uazapi.client';
+import { ZappfyClient } from '../zappfy/zappfy.client';
 import { StorageService } from '../media/storage.service';
 import { currentUserId, requireTenantId } from '../../common/tenant-context';
 import { TenantsController } from '../tenants/tenants.controller';
@@ -10,7 +10,7 @@ import { UsersController } from '../users/users.controller';
 export class GroupsService {
   constructor(
     private prisma: PrismaService,
-    private uazapi: UazapiClient,
+    private zappfy: ZappfyClient,
     private storage: StorageService,
   ) {}
 
@@ -47,12 +47,12 @@ export class GroupsService {
       mergedParticipants = Array.from(set);
     }
 
-    const created = await this.uazapi.createGroup(resolvedInstanceToken, name, mergedParticipants);
+    const created = await this.zappfy.createGroup(resolvedInstanceToken, name, mergedParticipants);
 
     // Promove todos os participantes adicionados na criação a admin (best-effort)
     if (created.id && mergedParticipants.length > 0) {
       try {
-        await this.uazapi.updateGroupParticipants(
+        await this.zappfy.updateGroupParticipants(
           resolvedInstanceToken,
           created.id,
           'promote',
@@ -110,7 +110,7 @@ export class GroupsService {
         'Configure sua conexão WhatsApp em Configurações > Minha conexão antes de disparar.',
       );
     }
-    const remote = await this.uazapi.listGroups(resolvedInstanceToken);
+    const remote = await this.zappfy.listGroups(resolvedInstanceToken);
     const remoteIds = new Set(remote.map((g) => g.id));
 
     // 1. Upsert cada grupo presente na instancia, marcando active=true
@@ -196,10 +196,10 @@ export class GroupsService {
     if (!group) throw new NotFoundException('Group not found');
 
     if (dto.name !== undefined) {
-      await this.uazapi.updateGroupName(instanceToken, group.remoteId, dto.name);
+      await this.zappfy.updateGroupName(instanceToken, group.remoteId, dto.name);
     }
     if (dto.description !== undefined) {
-      await this.uazapi.updateGroupDescription(instanceToken, group.remoteId, dto.description);
+      await this.zappfy.updateGroupDescription(instanceToken, group.remoteId, dto.description);
     }
     let pictureUrl: string | undefined;
     if (dto.pictureMediaId) {
@@ -207,7 +207,7 @@ export class GroupsService {
       if (!media) throw new NotFoundException('Media not found');
       const dataUri = await this.storage.objectAsDataUri(media.s3Key, media.mime);
       pictureUrl = await this.storage.presignedGetUrl(media.s3Key, 600);
-      await this.uazapi.updateGroupPicture(instanceToken, group.remoteId, dataUri);
+      await this.zappfy.updateGroupPicture(instanceToken, group.remoteId, dataUri);
     }
 
     return this.prisma.group.update({
@@ -235,7 +235,7 @@ export class GroupsService {
       throw new BadRequestException('participants must not be empty');
     }
 
-    const addResp = await this.uazapi.updateGroupParticipants(
+    const addResp = await this.zappfy.updateGroupParticipants(
       instanceToken,
       group.remoteId,
       'add',
@@ -245,7 +245,7 @@ export class GroupsService {
     let promoteResp: unknown = null;
     if (asAdmin) {
       try {
-        promoteResp = await this.uazapi.updateGroupParticipants(
+        promoteResp = await this.zappfy.updateGroupParticipants(
           instanceToken,
           group.remoteId,
           'promote',
@@ -270,10 +270,10 @@ export class GroupsService {
     if (!group) throw new NotFoundException('Group not found');
     const out: Record<string, unknown> = {};
     if (opts.locked !== undefined) {
-      out.locked = await this.uazapi.updateGroupLocked(instanceToken, group.remoteId, opts.locked);
+      out.locked = await this.zappfy.updateGroupLocked(instanceToken, group.remoteId, opts.locked);
     }
     if (opts.announce !== undefined) {
-      out.announce = await this.uazapi.updateGroupAnnounce(
+      out.announce = await this.zappfy.updateGroupAnnounce(
         instanceToken,
         group.remoteId,
         opts.announce,
@@ -293,7 +293,7 @@ export class GroupsService {
     if (!group) throw new NotFoundException('Group not found');
     const payload = await this.resolvePictureSource(source);
     if (!payload) throw new BadRequestException('Provide mediaId | dataUri | imageUrl');
-    await this.uazapi.updateGroupPicture(instanceToken, group.remoteId, payload);
+    await this.zappfy.updateGroupPicture(instanceToken, group.remoteId, payload);
     return { ok: true };
   }
 
@@ -310,7 +310,7 @@ export class GroupsService {
     if (!participants.length) {
       throw new BadRequestException('participants must not be empty');
     }
-    return this.uazapi.updateGroupParticipants(instanceToken, group.remoteId, action, participants);
+    return this.zappfy.updateGroupParticipants(instanceToken, group.remoteId, action, participants);
   }
 
   // ====== bulk: criar N grupos sequenciais (ex: #5 .. #14) ======
@@ -471,17 +471,17 @@ export class GroupsService {
       };
       if (input.description !== undefined) {
         await tryStep('description', () =>
-          this.uazapi.updateGroupDescription(instanceToken, g.remoteId, input.description!),
+          this.zappfy.updateGroupDescription(instanceToken, g.remoteId, input.description!),
         );
         await this.sleep(2000);
       }
       if (input.addAdmins?.length) {
         await tryStep('add_admins', () =>
-          this.uazapi.updateGroupParticipants(instanceToken, g.remoteId, 'add', input.addAdmins!),
+          this.zappfy.updateGroupParticipants(instanceToken, g.remoteId, 'add', input.addAdmins!),
         );
         await this.sleep(3000);
         await tryStep('promote', () =>
-          this.uazapi.updateGroupParticipants(
+          this.zappfy.updateGroupParticipants(
             instanceToken,
             g.remoteId,
             'promote',
@@ -492,19 +492,19 @@ export class GroupsService {
       }
       if (picPayload) {
         await tryStep('picture', () =>
-          this.uazapi.updateGroupPicture(instanceToken, g.remoteId, picPayload),
+          this.zappfy.updateGroupPicture(instanceToken, g.remoteId, picPayload),
         );
         await this.sleep(2000);
       }
       if (input.locked !== undefined) {
         await tryStep('locked', () =>
-          this.uazapi.updateGroupLocked(instanceToken, g.remoteId, input.locked!),
+          this.zappfy.updateGroupLocked(instanceToken, g.remoteId, input.locked!),
         );
         await this.sleep(2000);
       }
       if (input.announce !== undefined) {
         await tryStep('announce', () =>
-          this.uazapi.updateGroupAnnounce(instanceToken, g.remoteId, input.announce!),
+          this.zappfy.updateGroupAnnounce(instanceToken, g.remoteId, input.announce!),
         );
       }
       results.push({ id: g.id, name: g.name, ok: errors.length === 0, errors });
@@ -531,11 +531,11 @@ export class GroupsService {
 
     if (t.defaultGroupAdmins.length) {
       await tryStep(() =>
-        this.uazapi.updateGroupParticipants(instanceToken, remoteId, 'add', t.defaultGroupAdmins),
+        this.zappfy.updateGroupParticipants(instanceToken, remoteId, 'add', t.defaultGroupAdmins),
       );
       await this.sleep(3000);
       await tryStep(() =>
-        this.uazapi.updateGroupParticipants(
+        this.zappfy.updateGroupParticipants(
           instanceToken,
           remoteId,
           'promote',
@@ -546,23 +546,23 @@ export class GroupsService {
     }
     if (t.defaultGroupDescription) {
       await tryStep(() =>
-        this.uazapi.updateGroupDescription(instanceToken, remoteId, t.defaultGroupDescription!),
+        this.zappfy.updateGroupDescription(instanceToken, remoteId, t.defaultGroupDescription!),
       );
       await this.sleep(2000);
     }
     if (t.defaultGroupPictureMediaId) {
       const dataUri = await this.resolvePictureSource({ mediaId: t.defaultGroupPictureMediaId });
       if (dataUri) {
-        await tryStep(() => this.uazapi.updateGroupPicture(instanceToken, remoteId, dataUri));
+        await tryStep(() => this.zappfy.updateGroupPicture(instanceToken, remoteId, dataUri));
         await this.sleep(2000);
       }
     }
     if (t.defaultGroupLocked) {
-      await tryStep(() => this.uazapi.updateGroupLocked(instanceToken, remoteId, true));
+      await tryStep(() => this.zappfy.updateGroupLocked(instanceToken, remoteId, true));
       await this.sleep(2000);
     }
     if (t.defaultGroupAnnounce) {
-      await tryStep(() => this.uazapi.updateGroupAnnounce(instanceToken, remoteId, true));
+      await tryStep(() => this.zappfy.updateGroupAnnounce(instanceToken, remoteId, true));
     }
   }
 

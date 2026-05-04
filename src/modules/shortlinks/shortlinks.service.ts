@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { currentUserId, requireTenantId } from '../../common/tenant-context';
-import { UazapiClient } from '../uazapi/uazapi.client';
+import { ZappfyClient } from '../zappfy/zappfy.client';
 import { UsersController } from '../users/users.controller';
 import { decryptToken } from '../../common/crypto.util';
 import type { Prisma, ShortlinkStrategy, CapacitySource } from '@prisma/client';
@@ -40,7 +40,7 @@ export class ShortlinksService {
 
   constructor(
     private prisma: PrismaService,
-    private uazapi: UazapiClient,
+    private zappfy: ZappfyClient,
   ) {}
 
   private normalizeSlug(slug: string) {
@@ -224,7 +224,7 @@ export class ShortlinksService {
       );
     }
 
-    const info = await this.uazapi.getGroupInfo(conn.instanceToken, item.group.remoteId, {
+    const info = await this.zappfy.getGroupInfo(conn.instanceToken, item.group.remoteId, {
       getInviteLink: true,
       force: true,
     });

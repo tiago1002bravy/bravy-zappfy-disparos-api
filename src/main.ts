@@ -17,7 +17,7 @@ async function bootstrap() {
   );
 
   const mcpDescription = `
-API multi-tenant para agendamento de disparos WhatsApp via Uazapi.
+API multi-tenant para agendamento de disparos WhatsApp via Zappfy.
 
 ## Autenticação
 
@@ -54,7 +54,7 @@ Esta API também tem um **servidor MCP** (Model Context Protocol) pra usar com C
 | Tool | Descrição |
 | --- | --- |
 | \`list_groups\` | Lista grupos sincronizados (cache local) |
-| \`sync_groups\` | Sincroniza grupos do WhatsApp via Uazapi |
+| \`sync_groups\` | Sincroniza grupos do WhatsApp via Zappfy |
 | \`list_messages\` | Lista templates de mensagem |
 | \`create_message\` | Cria template de mensagem (com mídia opcional) |
 | \`upload_media\` | Faz upload de mídia (imagem/vídeo/áudio/PDF) |

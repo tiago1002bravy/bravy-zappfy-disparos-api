@@ -141,7 +141,7 @@ model GroupShortlink {
   // Quantos cliques aguentar ANTES do primeiro recheck via Uazapi
   initialClickBudget Int               @default(800)
   // Fonte primaria de capacidade
-  capacitySource     CapacitySource    @default(UAZAPI)
+  capacitySource     CapacitySource    @default(ZAPPFY)
 
   // Auto-criacao quando todos lotam
   autoCreate         Boolean @default(false)
@@ -232,7 +232,7 @@ enum ShortlinkStrategy {
 }
 
 enum CapacitySource {
-  UAZAPI
+  ZAPPFY
   CLICK_COUNT
 }
 

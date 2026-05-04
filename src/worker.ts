@@ -18,7 +18,7 @@ import {
   UpdateGroupJobData,
 } from './queue/queue.constants';
 import { decryptToken } from './common/crypto.util';
-import { UazapiClient } from './modules/uazapi/uazapi.client';
+import { ZappfyClient } from './modules/zappfy/zappfy.client';
 import { notifyFailure } from './queue/webhook-notify.util';
 
 const log = (msg: string, extra?: unknown) =>
@@ -39,7 +39,7 @@ const connection = new IORedis({
 });
 
 const prisma = new PrismaClient();
-const uazapi = new UazapiClient();
+const zappfy = new ZappfyClient();
 const flowProducer = new FlowProducer({ connection });
 
 const minio = new MinioClient({
@@ -205,14 +205,14 @@ const sendSingleWorker = new Worker<SendMessageSingleJobData>(
       const mentions = message.mentionAll ? 'all' : undefined;
       const isPoll = message.pollChoices.length > 0;
       if (isPoll) {
-        await uazapi.sendPoll(token, {
+        await zappfy.sendPoll(token, {
           number: groupRemoteId,
           text: message.text ?? '',
           choices: message.pollChoices,
           selectableCount: message.pollSelectableCount ?? 1,
         });
       } else if (message.medias.length === 0 && message.text) {
-        await uazapi.sendText(token, { number: groupRemoteId, text: message.text, mentions });
+        await zappfy.sendText(token, { number: groupRemoteId, text: message.text, mentions });
       } else {
         for (let i = 0; i < message.medias.length; i++) {
           const mm = message.medias[i];
@@ -225,7 +225,7 @@ const sendSingleWorker = new Worker<SendMessageSingleJobData>(
             DOCUMENT: 'document',
           };
           const explicitType = mm.kind === 'AUTO' ? undefined : kindToType[mm.kind];
-          await uazapi.sendMedia(token, {
+          await zappfy.sendMedia(token, {
             number: groupRemoteId,
             file: dataUri,
             mime: mm.media.mime,
@@ -319,16 +319,16 @@ const updateWorker = new Worker<UpdateGroupJobData>(
 
     try {
       if (sched.target === 'NAME' && sched.newName) {
-        await uazapi.updateGroupName(token, sched.groupRemoteId, sched.newName);
+        await zappfy.updateGroupName(token, sched.groupRemoteId, sched.newName);
       } else if (sched.target === 'DESCRIPTION' && sched.newDescription !== null) {
-        await uazapi.updateGroupDescription(token, sched.groupRemoteId, sched.newDescription ?? '');
+        await zappfy.updateGroupDescription(token, sched.groupRemoteId, sched.newDescription ?? '');
       } else if (sched.target === 'PICTURE' && sched.newPictureMediaId) {
         const media = await prisma.mediaAsset.findFirst({
           where: { id: sched.newPictureMediaId, tenantId },
         });
         if (!media) throw new Error('Picture media not found');
         const dataUri = await objectAsDataUri(media.s3Key, media.mime);
-        await uazapi.updateGroupPicture(token, sched.groupRemoteId, dataUri);
+        await zappfy.updateGroupPicture(token, sched.groupRemoteId, dataUri);
       }
       await prisma.execution.create({
         data: {

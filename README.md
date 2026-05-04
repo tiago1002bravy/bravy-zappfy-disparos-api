@@ -1,6 +1,6 @@
 # Zappfy Disparos — API + Worker
 
-API multi-tenant para agendar disparos de WhatsApp via Uazapi.
+API multi-tenant para agendar disparos de WhatsApp via Zappfy.
 
 ## Stack
 
@@ -8,7 +8,7 @@ API multi-tenant para agendar disparos de WhatsApp via Uazapi.
 - BullMQ + Redis (worker)
 - MinIO (storage S3-compat)
 - JWT + API Keys
-- Token Uazapi criptografado em rest (AES-256-GCM)
+- Token Zappfy criptografado em rest (AES-256-GCM)
 
 ## Subir em dev (sem Docker)
 
@@ -90,7 +90,7 @@ Lista interativa: `https://grupos-api.bravy.com.br/docs` (Swagger UI). OpenAPI J
 - `DELETE /shortlinks/:id/items/:itemId`
 - `PATCH /shortlinks/:id/items/:itemId` — order/status (ACTIVE/FULL/INVALID/DISABLED)
 - `POST /shortlinks/:id/items/reorder`
-- `POST /shortlinks/:id/items/:itemId/refresh` — refresh do invite via Uazapi
+- `POST /shortlinks/:id/items/:itemId/refresh` — refresh do invite via Zappfy
 - `GET /shortlinks/:id/stats`
 - **`GET /g/:slug`** (público, sem prefixo `/api/v1`) — redirect 302 pro grupo atual
 
@@ -103,7 +103,7 @@ Lista interativa: `https://grupos-api.bravy.com.br/docs` (Swagger UI). OpenAPI J
 - `GET/POST/PATCH/DELETE /messages`
 - `POST /messages/preview` — preview com spintax + variáveis (`{{group_name}}`, `{{group_remote_id}}`, etc.)
 - `POST /messages/:id/send-now` — dispara imediatamente (cria schedule ONCE)
-- **Enquete:** passe `pollChoices: string[]` (≥2) e `pollSelectableCount: number` no body do create/patch. Worker chama `uazapi.sendPoll` automaticamente quando `pollChoices.length > 0`.
+- **Enquete:** passe `pollChoices: string[]` (≥2) e `pollSelectableCount: number` no body do create/patch. Worker chama `zappfy.sendPoll` automaticamente quando `pollChoices.length > 0`.
 
 ### Schedules
 

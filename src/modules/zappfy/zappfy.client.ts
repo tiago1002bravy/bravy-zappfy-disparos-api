@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios, { AxiosInstance } from 'axios';
 
-export interface UazapiGroup {
+export interface ZappfyGroup {
   id: string;
   name: string;
   description?: string;
@@ -9,14 +9,14 @@ export interface UazapiGroup {
   participantsCount?: number;
 }
 
-export interface UazapiSendTextOpts {
+export interface ZappfySendTextOpts {
   number: string; // group remote id (ex: 123@g.us)
   text: string;
   /** "all" pra mencionar todos OU CSV de números "5511999999999,5511888888888" */
   mentions?: string;
 }
 
-export type UazapiMediaType =
+export type ZappfyMediaType =
   | 'image'
   | 'video'
   | 'audio'
@@ -26,41 +26,41 @@ export type UazapiMediaType =
   | 'document'
   | 'sticker';
 
-export interface UazapiSendMediaOpts {
+export interface ZappfySendMediaOpts {
   number: string;
   /** URL pública OU data URI base64 (data:mime;base64,...) OU base64 puro */
   file: string;
   mime: string;
   /** Se omitido, detecta pelo mime. Use ptt pra áudio "gravado". */
-  type?: UazapiMediaType;
+  type?: ZappfyMediaType;
   caption?: string;
   filename?: string;
   mentions?: string;
 }
 
-export interface UazapiGroupInfo {
+export interface ZappfyGroupInfo {
   id: string;
   name: string;
   participants: string[]; // phone numbers normalizados
   inviteLink?: string;
 }
 
-export interface UazapiUpdateGroupOpts {
+export interface ZappfyUpdateGroupOpts {
   groupId: string;
   name?: string;
   description?: string;
   pictureUrl?: string;
 }
 
-const BASE = process.env.UAZAPI_BASE_URL ?? 'https://free.uazapi.com';
+const BASE = process.env.ZAPPFY_BASE_URL ?? 'https://free.uazapi.com';
 
 /**
- * Cliente Uazapi. Cada chamada recebe `instanceToken` (header `token`).
+ * Cliente Zappfy. Cada chamada recebe `instanceToken` (header `token`).
  * O `instanceName` é opcional (algumas rotas só precisam do token).
  */
 @Injectable()
-export class UazapiClient {
-  private readonly log = new Logger('UazapiClient');
+export class ZappfyClient {
+  private readonly log = new Logger('ZappfyClient');
 
   private http(token: string): AxiosInstance {
     return axios.create({
@@ -74,7 +74,7 @@ export class UazapiClient {
     token: string,
     name: string,
     participants: string[],
-  ): Promise<UazapiGroup> {
+  ): Promise<ZappfyGroup> {
     const { data } = await this.http(token).post('/group/create', {
       name,
       participants,
@@ -89,7 +89,7 @@ export class UazapiClient {
     };
   }
 
-  async listGroups(token: string): Promise<UazapiGroup[]> {
+  async listGroups(token: string): Promise<ZappfyGroup[]> {
     const { data } = await this.http(token).post('/group/list', {});
     const arr = Array.isArray(data) ? data : (data?.groups ?? []);
     return arr.map((g: Record<string, unknown>) => ({
@@ -101,7 +101,7 @@ export class UazapiClient {
     }));
   }
 
-  async sendText(token: string, opts: UazapiSendTextOpts) {
+  async sendText(token: string, opts: ZappfySendTextOpts) {
     const body: Record<string, unknown> = {
       number: opts.number,
       text: opts.text,
@@ -111,8 +111,8 @@ export class UazapiClient {
     return data;
   }
 
-  async sendMedia(token: string, opts: UazapiSendMediaOpts) {
-    const type: UazapiMediaType =
+  async sendMedia(token: string, opts: ZappfySendMediaOpts) {
+    const type: ZappfyMediaType =
       opts.type ??
       (opts.mime.startsWith('image/')
         ? 'image'
@@ -140,7 +140,7 @@ export class UazapiClient {
     token: string,
     groupId: string,
     opts: { getInviteLink?: boolean; force?: boolean } = {},
-  ): Promise<UazapiGroupInfo> {
+  ): Promise<ZappfyGroupInfo> {
     const { data } = await this.http(token).post('/group/info', {
       groupjid: groupId,
       getInviteLink: opts.getInviteLink ?? false,

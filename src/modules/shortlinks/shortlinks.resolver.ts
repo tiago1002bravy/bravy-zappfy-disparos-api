@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { UazapiClient } from '../uazapi/uazapi.client';
+import { ZappfyClient } from '../zappfy/zappfy.client';
 import { decryptToken } from '../../common/crypto.util';
 import type { GroupShortlink, GroupShortlinkItem, Group, Tenant, Prisma } from '@prisma/client';
 
@@ -19,7 +19,7 @@ export class ShortlinksResolver {
 
   constructor(
     private prisma: PrismaService,
-    private uazapi: UazapiClient,
+    private zappfy: ZappfyClient,
   ) {}
 
   async resolve(
@@ -47,7 +47,7 @@ export class ShortlinksResolver {
     if (!item && sl.autoCreate && sl.autoCreateInstance) {
       const created = await this.tryAutoCreate(sl).catch((e) => {
         this.log.error(`auto-create falhou pra slug=${sl.slug}: ${(e as Error).message}`);
-        this.logEvent(sl.id, null, 'uazapi_error', {
+        this.logEvent(sl.id, null, 'zappfy_error', {
           phase: 'auto_create',
           error: (e as Error).message,
         });
@@ -117,7 +117,7 @@ export class ShortlinksResolver {
 
   // === capacity check ===
   private needsCapacityCheck(sl: SlWithItems, item: GroupShortlinkItem) {
-    if (sl.capacitySource !== 'UAZAPI') return false;
+    if (sl.capacitySource !== 'ZAPPFY') return false;
     return item.clicks >= item.nextCheckAtClicks;
   }
 
@@ -132,7 +132,7 @@ export class ShortlinksResolver {
     }
     try {
       const token = decryptToken(tokenEnc);
-      const info = await this.uazapi.getGroupInfo(token, item.group.remoteId, {
+      const info = await this.zappfy.getGroupInfo(token, item.group.remoteId, {
         getInviteLink: false,
         force: true,
       });
@@ -179,8 +179,8 @@ export class ShortlinksResolver {
       });
       return updated;
     } catch (e) {
-      this.log.warn(`uazapi recheck falhou: ${(e as Error).message}`);
-      this.logEvent(sl.id, item.id, 'uazapi_error', {
+      this.log.warn(`zappfy recheck falhou: ${(e as Error).message}`);
+      this.logEvent(sl.id, item.id, 'zappfy_error', {
         phase: 'recheck',
         error: (e as Error).message,
       });
@@ -232,14 +232,14 @@ export class ShortlinksResolver {
       this.log.warn(`auto-create: defaultParticipants vazio, criando grupo so com o bot`);
     }
 
-    const created = await this.uazapi.createGroup(token, name, participants);
+    const created = await this.zappfy.createGroup(token, name, participants);
     if (!created.id) {
-      this.log.warn(`auto-create: uazapi nao retornou id`);
+      this.log.warn(`auto-create: zappfy nao retornou id`);
       return null;
     }
 
     // Pega invite do grupo recem-criado
-    const info = await this.uazapi.getGroupInfo(token, created.id, {
+    const info = await this.zappfy.getGroupInfo(token, created.id, {
       getInviteLink: true,
       force: true,
     });
@@ -285,7 +285,7 @@ export class ShortlinksResolver {
     const tokenEnc = sl.tenant.defaultInstanceTokenEnc;
     if (!tokenEnc) return null;
     const token = decryptToken(tokenEnc);
-    const info = await this.uazapi.getGroupInfo(token, item.group.remoteId, {
+    const info = await this.zappfy.getGroupInfo(token, item.group.remoteId, {
       getInviteLink: true,
       force: true,
     });

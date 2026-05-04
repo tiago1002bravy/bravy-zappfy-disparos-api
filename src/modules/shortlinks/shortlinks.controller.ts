@@ -32,7 +32,7 @@ import { ShortlinksResolver } from './shortlinks.resolver';
 import { GeoResolverService } from './geo-resolver.service';
 
 const STRATEGIES = ['SEQUENTIAL', 'ROUND_ROBIN', 'RANDOM'] as const;
-const CAPACITY_SOURCES = ['UAZAPI', 'CLICK_COUNT'] as const;
+const CAPACITY_SOURCES = ['ZAPPFY', 'CLICK_COUNT'] as const;
 const ITEM_STATUSES = ['ACTIVE', 'FULL', 'INVALID', 'DISABLED'] as const;
 
 class CreateShortlinkDto {

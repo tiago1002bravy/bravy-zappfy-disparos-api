@@ -18,7 +18,7 @@ import { GroupUpdateSchedulesModule } from './modules/group-update-schedules/gro
 import { ExecutionsModule } from './modules/executions/executions.module';
 import { CalendarModule } from './modules/calendar/calendar.module';
 import { CronModule } from './modules/cron/cron.module';
-import { UazapiModule } from './modules/uazapi/uazapi.module';
+import { ZappfyModule } from './modules/zappfy/zappfy.module';
 import { HealthModule } from './modules/health/health.module';
 import { QueueModule } from './queue/queue.module';
 import { TimeoutInterceptor } from './common/interceptors/timeout.interceptor';
@@ -32,7 +32,7 @@ import { RequestLoggerMiddleware } from './common/middleware/request-logger.midd
       { name: 'default', ttl: 60_000, limit: 120 },
     ]),
     PrismaModule,
-    UazapiModule,
+    ZappfyModule,
     QueueModule,
     AuthModule,
     ApiKeysModule,
