@@ -5,7 +5,12 @@ WORKDIR /app
 
 FROM base AS deps
 COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+# --ignore-scripts: pnpm v10 falha com ERR_PNPM_IGNORED_BUILDS quando há
+# dependências com postinstall (prisma, sharp, msgpackr-extract). Pulamos
+# todos os scripts no install e rodamos os necessários explicitamente no
+# stage de build (prisma generate). sharp 0.33+ usa prebuilt binaries e
+# não precisa de postinstall em runtime.
+RUN pnpm install --frozen-lockfile --ignore-scripts
 
 FROM base AS build
 COPY --from=deps /app/node_modules ./node_modules
