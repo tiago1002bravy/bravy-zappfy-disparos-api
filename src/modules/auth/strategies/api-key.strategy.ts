@@ -19,6 +19,14 @@ export class ApiKeyStrategy extends PassportStrategy(Strategy, 'api-key') {
       where: { id: key.id },
       data: { lastUsedAt: new Date() },
     });
-    return { tenantId: key.tenantId, apiKeyId: key.id, scopes: key.scopes };
+    // userId é nullable na ApiKey (legacy) — quando preenchido, requests via essa
+    // chave herdam a Conexão WhatsApp do user dono (ex: refresh manual de
+    // shortlink chama UsersController.resolveConnection(userId)).
+    return {
+      tenantId: key.tenantId,
+      userId: key.userId ?? undefined,
+      apiKeyId: key.id,
+      scopes: key.scopes,
+    };
   }
 }

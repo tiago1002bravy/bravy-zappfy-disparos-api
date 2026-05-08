@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ZappfyClient } from '../zappfy/zappfy.client';
-import { decryptToken } from '../../common/crypto.util';
+import { resolveShortlinkConnection, type ShortlinkConn } from './shortlink-connection.helper';
 import type { GroupShortlink, GroupShortlinkItem, Group, Tenant, Prisma } from '@prisma/client';
 
 type SlWithItems = GroupShortlink & {
@@ -121,17 +121,29 @@ export class ShortlinksResolver {
     return item.clicks >= item.nextCheckAtClicks;
   }
 
+  /**
+   * Resolve qual Conexão WhatsApp usar pra esse shortlink.
+   * Ordem: createdById do shortlink → fallback firstOwner do tenant.
+   * Substitui o leitor antigo de `sl.tenant.defaultInstanceTokenEnc` (legacy
+   * desde a migração 20260429190000_user_instance_connection — colunas
+   * defaultInstance* não são mais escritas, só legacy no banco).
+   */
+  private resolveConn(sl: SlWithItems): Promise<ShortlinkConn | null> {
+    return resolveShortlinkConnection(this.prisma, sl.tenantId, sl.createdById);
+  }
+
   private async recheckAndPromote(
     sl: SlWithItems,
     item: GroupShortlinkItem & { group: Group },
   ): Promise<(GroupShortlinkItem & { group: Group }) | null> {
-    const tokenEnc = sl.tenant.defaultInstanceTokenEnc;
-    if (!tokenEnc) {
-      this.log.warn(`recheck pulado — tenant sem instancia default (slug=${sl.slug})`);
+    const conn = await this.resolveConn(sl);
+    if (!conn) {
+      this.log.warn(`recheck pulado — nenhum OWNER com conn (slug=${sl.slug})`);
+      this.logEvent(sl.id, item.id, 'no_connection', { phase: 'recheck' });
       return item;
     }
     try {
-      const token = decryptToken(tokenEnc);
+      const token = conn.instanceToken;
       const info = await this.zappfy.getGroupInfo(token, item.group.remoteId, {
         getInviteLink: false,
         force: true,
@@ -212,12 +224,13 @@ export class ShortlinksResolver {
     sl: SlWithItems,
   ): Promise<(GroupShortlinkItem & { group: Group }) | null> {
     if (!sl.autoCreateInstance) return null;
-    const tokenEnc = sl.tenant.defaultInstanceTokenEnc;
-    if (!tokenEnc) {
-      this.log.warn(`auto-create pulado — sem instancia default`);
+    const conn = await this.resolveConn(sl);
+    if (!conn) {
+      this.log.warn(`auto-create pulado — sem OWNER com conn (slug=${sl.slug})`);
+      this.logEvent(sl.id, null, 'no_connection', { phase: 'auto_create' });
       return null;
     }
-    const token = decryptToken(tokenEnc);
+    const token = conn.instanceToken;
 
     const n = sl.items.length + 1;
     const tpl = sl.autoCreateTemplate ?? 'Grupo {N}';
@@ -282,9 +295,12 @@ export class ShortlinksResolver {
 
   // === refresh invite individual ===
   private async refreshInvite(sl: SlWithItems, item: GroupShortlinkItem & { group: Group }) {
-    const tokenEnc = sl.tenant.defaultInstanceTokenEnc;
-    if (!tokenEnc) return null;
-    const token = decryptToken(tokenEnc);
+    const conn = await this.resolveConn(sl);
+    if (!conn) {
+      this.logEvent(sl.id, item.id, 'no_connection', { phase: 'refresh_invite' });
+      return null;
+    }
+    const token = conn.instanceToken;
     const info = await this.zappfy.getGroupInfo(token, item.group.remoteId, {
       getInviteLink: true,
       force: true,
