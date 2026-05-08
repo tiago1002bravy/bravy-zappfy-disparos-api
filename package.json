@@ -4,7 +4,9 @@
   "private": true,
   "description": "API + Worker do Zappfy Disparos",
   "scripts": {
+    "prebuild": "prisma generate",
     "build": "nest build",
+    "prestart": "prisma generate",
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:worker": "node dist/worker.js",
