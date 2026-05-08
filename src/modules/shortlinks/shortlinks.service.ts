@@ -2,8 +2,7 @@ import { BadRequestException, Injectable, NotFoundException, Logger } from '@nes
 import { PrismaService } from '../../prisma/prisma.service';
 import { currentUserId, requireTenantId } from '../../common/tenant-context';
 import { ZappfyClient } from '../zappfy/zappfy.client';
-import { UsersController } from '../users/users.controller';
-import { decryptToken } from '../../common/crypto.util';
+import { resolveShortlinkConnection } from './shortlink-connection.helper';
 import type { Prisma, ShortlinkStrategy, CapacitySource } from '@prisma/client';
 
 interface CreateShortlinkInput {
@@ -74,6 +73,10 @@ export class ShortlinksService {
     return this.prisma.groupShortlink.create({
       data: {
         tenantId,
+        // dono do shortlink → resolver usa a Conexão WhatsApp dele pro
+        // capacity check, refresh on-demand e auto-create. Nullable pra
+        // retro-compat; se vier null o resolver aplica fallback firstOwner.
+        createdById: currentUserId() ?? null,
         slug,
         notes: dto.notes,
         strategy: dto.strategy,
@@ -175,7 +178,13 @@ export class ShortlinksService {
   async updateItem(
     shortlinkId: string,
     itemId: string,
-    dto: { order?: number; status?: 'ACTIVE' | 'FULL' | 'INVALID' | 'DISABLED' },
+    dto: {
+      order?: number;
+      status?: 'ACTIVE' | 'FULL' | 'INVALID' | 'DISABLED';
+      // Escape hatch: cole o link de convite manualmente quando o refresh
+      // automático via Uazapi falhar (versão self-hosted nem sempre devolve invite).
+      currentInviteUrl?: string;
+    },
   ) {
     const sl = await this.getOne(shortlinkId);
     const item = sl.items.find((i) => i.id === itemId);
@@ -185,6 +194,12 @@ export class ShortlinksService {
       data: {
         ...(dto.order !== undefined ? { order: dto.order } : {}),
         ...(dto.status !== undefined ? { status: dto.status } : {}),
+        ...(dto.currentInviteUrl !== undefined
+          ? {
+              currentInviteUrl: dto.currentInviteUrl,
+              lastRefreshedAt: new Date(),
+            }
+          : {}),
       },
     });
   }
@@ -206,21 +221,46 @@ export class ShortlinksService {
         this.prisma.groupShortlinkItem.update({ where: { id }, data: { order: idx } }),
       ),
     );
+
+    // Após reordenar, o "novo atual" (primeiro ACTIVE em ordem) pode estar com
+    // currentInviteUrl=null — caso clássico de quem foi adicionado depois e nunca
+    // teve refresh. Sem isso o redirect público cai em 503 "Sem grupo disponivel".
+    // Tenta refresh síncrono; falha não bloqueia o reorder.
+    const refreshed = await this.prisma.groupShortlink.findFirst({
+      where: { id: shortlinkId },
+      include: this.includeFull(),
+    });
+    const firstActive = refreshed?.items.find((i) => i.status === 'ACTIVE');
+    if (firstActive && !firstActive.currentInviteUrl) {
+      try {
+        await this.refreshItem(shortlinkId, firstActive.id);
+      } catch (e) {
+        this.log.warn(
+          `auto-refresh pós-reorder falhou pra item ${firstActive.id}: ${(e as Error).message}`,
+        );
+      }
+    }
+
     return this.getOne(shortlinkId);
   }
 
   // ====== refresh manual de invite (admin) ======
 
   async refreshItem(shortlinkId: string, itemId: string) {
-    requireTenantId();
+    const tenantId = requireTenantId();
     const sl = await this.getOne(shortlinkId);
     const item = sl.items.find((i) => i.id === itemId);
     if (!item) throw new NotFoundException('Item not found');
 
-    const conn = await UsersController.resolveConnection(this.prisma, currentUserId());
+    // Resolve conn em ordem: creator do shortlink → currentUser → fallback firstOwner.
+    // Aceita request via JWT (currentUserId populado), API key vinculada a user (PR2),
+    // ou API key legada (cai no fallback).
+    const preferred = sl.createdById ?? currentUserId() ?? null;
+    const conn = await resolveShortlinkConnection(this.prisma, tenantId, preferred);
     if (!conn) {
       throw new BadRequestException(
-        'Configure sua conexão WhatsApp em Configurações > Minha conexão antes de atualizar shortlinks.',
+        'Nenhum usuário OWNER do tenant tem Conexão WhatsApp configurada. ' +
+          'Configure em Configurações > Minha conexão.',
       );
     }
 
@@ -229,7 +269,9 @@ export class ShortlinksService {
       force: true,
     });
     if (!info.inviteLink) {
-      throw new BadRequestException('Group has no invite link or instance is not member');
+      throw new BadRequestException(
+        'Grupo sem link de convite. Verifique se o número é admin do grupo e se o invite está habilitado no WhatsApp.',
+      );
     }
 
     return this.prisma.groupShortlinkItem.update({

@@ -4,10 +4,15 @@ import { IsArray, IsOptional, IsString, MinLength } from 'class-validator';
 import { ApiKeysService } from './api-keys.service';
 import { JwtOrApiKeyGuard } from '../auth/guards/jwt-or-api-key.guard';
 import { TenantInterceptor } from '../../common/interceptors/tenant.interceptor';
+import { CurrentUser, AuthUser } from '../../common/decorators/current-user.decorator';
 
 class CreateApiKeyDto {
   @IsString() @MinLength(2) name!: string;
   @IsOptional() @IsArray() @IsString({ each: true }) scopes?: string[];
+  // Vincula a key a um usuário do tenant. Quando preenchido, requests via essa
+  // key herdam a Conexão WhatsApp do user (refresh manual de shortlinks etc).
+  // Default = currentUser, ou null se a request veio de uma API key sem user.
+  @IsOptional() @IsString() userId?: string | null;
 }
 
 @ApiTags('api-keys')
@@ -24,8 +29,10 @@ export class ApiKeysController {
   }
 
   @Post()
-  create(@Body() dto: CreateApiKeyDto) {
-    return this.svc.create(dto.name, dto.scopes ?? []);
+  create(@CurrentUser() u: AuthUser, @Body() dto: CreateApiKeyDto) {
+    // userId explícito > currentUser > null
+    const userId = dto.userId !== undefined ? dto.userId : (u.userId ?? null);
+    return this.svc.create(dto.name, dto.scopes ?? [], userId);
   }
 
   @Delete(':id')

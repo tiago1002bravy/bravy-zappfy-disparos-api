@@ -21,6 +21,8 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  IsUrl,
+  Matches,
   Max,
   Min,
   MinLength,
@@ -68,6 +70,14 @@ class AddItemsDto {
 class UpdateItemDto {
   @IsOptional() @IsInt() @Min(0) order?: number;
   @IsOptional() @IsEnum(ITEM_STATUSES) status?: (typeof ITEM_STATUSES)[number];
+  // Escape hatch: cole link de convite manualmente quando refresh via Uazapi falhar.
+  // Aceita só URLs de chat.whatsapp.com pra evitar injection.
+  @IsOptional()
+  @IsUrl({ require_protocol: true })
+  @Matches(/^https:\/\/chat\.whatsapp\.com\/[A-Za-z0-9_-]+(\?.*)?$/, {
+    message: 'currentInviteUrl deve ser um link de convite válido do WhatsApp',
+  })
+  currentInviteUrl?: string;
 }
 
 class ReorderItemsDto {

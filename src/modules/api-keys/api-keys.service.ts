@@ -7,10 +7,19 @@ import { requireTenantId } from '../../common/tenant-context';
 export class ApiKeysService {
   constructor(private prisma: PrismaService) {}
 
-  async create(name: string, scopes: string[] = []) {
+  async create(name: string, scopes: string[] = [], userId: string | null = null) {
+    const tenantId = requireTenantId();
+    if (userId) {
+      // Valida que o user pertence ao mesmo tenant pra evitar vazar key cross-tenant
+      const u = await this.prisma.user.findFirst({
+        where: { id: userId, tenantId },
+        select: { id: true },
+      });
+      if (!u) throw new NotFoundException('Usuário não encontrado no tenant');
+    }
     const { plain, prefix, hash } = generateApiKey();
     const key = await this.prisma.apiKey.create({
-      data: { tenantId: requireTenantId(), name, prefix, hash, scopes },
+      data: { tenantId, userId, name, prefix, hash, scopes },
     });
     return { ...key, hash: undefined, plain };
   }
@@ -23,6 +32,8 @@ export class ApiKeysService {
         name: true,
         prefix: true,
         scopes: true,
+        userId: true,
+        user: { select: { id: true, email: true, name: true } },
         lastUsedAt: true,
         createdAt: true,
         revokedAt: true,

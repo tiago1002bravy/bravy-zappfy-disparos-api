@@ -80,7 +80,9 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant            Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  apiKeys           ApiKey[]         @relation("UserApiKeys")
+  createdShortlinks GroupShortlink[] @relation("CreatedShortlinks")
 
   @@unique([tenantId, email])
   @@index([tenantId])
@@ -89,6 +91,9 @@ model User {
 model ApiKey {
   id         String    @id @default(cuid())
   tenantId   String
+  // userId opcional pra retro-compat. Quando preenchido, requests autenticadas
+  // por essa key herdam a Conexão WhatsApp do user (refresh de shortlinks, etc).
+  userId     String?
   name       String
   hash       String    @unique
   prefix     String
@@ -98,8 +103,10 @@ model ApiKey {
   revokedAt  DateTime?
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User?  @relation("UserApiKeys", fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([tenantId])
+  @@index([userId])
 }
 
 model Group {
@@ -129,10 +136,15 @@ model Group {
 }
 
 model GroupShortlink {
-  id          String   @id @default(cuid())
+  id          String  @id @default(cuid())
   tenantId    String
-  slug        String   @unique
-  active      Boolean  @default(true)
+  // Usuário dono da Conexão WhatsApp usada pelo resolver (capacity check,
+  // refresh on-demand, auto-create). Setado no create() = currentUserId.
+  // Nullable pra retro-compat; resolver tem fallback pro primeiro OWNER do tenant
+  // com instanceTokenEnc preenchido.
+  createdById String?
+  slug        String  @unique
+  active      Boolean @default(true)
 
   // Rotacao
   strategy           ShortlinkStrategy @default(SEQUENTIAL)
@@ -156,12 +168,14 @@ model GroupShortlink {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant     Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  items      GroupShortlinkItem[]
-  clickLog   GroupShortlinkClick[]
-  events     GroupShortlinkEvent[]
+  tenant    Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy User?                 @relation("CreatedShortlinks", fields: [createdById], references: [id], onDelete: SetNull)
+  items     GroupShortlinkItem[]
+  clickLog  GroupShortlinkClick[]
+  events    GroupShortlinkEvent[]
 
   @@index([tenantId])
+  @@index([createdById])
 }
 
 model GroupShortlinkItem {
