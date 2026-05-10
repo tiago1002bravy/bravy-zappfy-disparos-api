@@ -140,7 +140,10 @@ export class ShortlinksResolver {
     if (!conn) {
       this.log.warn(`recheck pulado — nenhum OWNER com conn (slug=${sl.slug})`);
       this.logEvent(sl.id, item.id, 'no_connection', { phase: 'recheck' });
-      return item;
+      // Fallback de segurança: se já passou do hardCap em CLIQUES, presume cheio
+      // e promove próximo. Evita continuar mandando galera pra grupo que provavelmente
+      // já estourou no WhatsApp.
+      return this.maybePromoteFullByClicks(sl, item, 'no_connection');
     }
     try {
       const token = conn.instanceToken;
@@ -164,6 +167,7 @@ export class ShortlinksResolver {
           participantsCount: real,
           hardCap: sl.hardCap,
           clicksAtPromotion: item.clicks,
+          source: 'zappfy_confirmed',
         });
         // pula pro proximo
         return this.pickItem({
@@ -196,8 +200,58 @@ export class ShortlinksResolver {
         phase: 'recheck',
         error: (e as Error).message,
       });
+      // Mesmo fallback do caminho "sem conn": se clicks >= hardCap, presume cheio
+      return this.maybePromoteFullByClicks(sl, item, 'zappfy_error');
+    }
+  }
+
+  /**
+   * Fallback de segurança quando capacity check via Uazapi falha.
+   *
+   * Se o item já recebeu >= hardCap cliques (proxy "deveria estar cheio"), marca
+   * FULL e promove próximo. Evita continuar mandando galera pra um grupo que
+   * provavelmente já estourou no WhatsApp.
+   *
+   * Atenção: clicks no shortlink ≠ membros no grupo (drop-off típico de 30-50%
+   * entre clicar no link e entrar no grupo). Usar hardCap como threshold é
+   * conservador no sentido "rotaciona cedo demais", mas é melhor que NÃO
+   * rotacionar quando Uazapi está fora do ar.
+   *
+   * Se clicks < hardCap, devolve o item original sem mexer (permite mais cliques
+   * antes de presumir cheio).
+   */
+  private async maybePromoteFullByClicks(
+    sl: SlWithItems,
+    item: GroupShortlinkItem & { group: Group },
+    failureReason: 'no_connection' | 'zappfy_error',
+  ): Promise<(GroupShortlinkItem & { group: Group }) | null> {
+    if (item.clicks < sl.hardCap) {
       return item;
     }
+    await this.prisma.groupShortlinkItem.update({
+      where: { id: item.id },
+      data: {
+        status: 'FULL',
+        lastCheckedAt: new Date(),
+      },
+    });
+    this.logEvent(sl.id, item.id, 'promote_full', {
+      source: 'fallback_by_clicks',
+      failureReason,
+      clicksAtPromotion: item.clicks,
+      hardCap: sl.hardCap,
+      note: 'presumido cheio: clicks >= hardCap e capacity check falhou',
+    });
+    this.log.warn(
+      `promove FULL por fallback (slug=${sl.slug} item=${item.id}): ` +
+        `clicks=${item.clicks} >= hardCap=${sl.hardCap}, motivo=${failureReason}`,
+    );
+    return this.pickItem({
+      ...sl,
+      items: sl.items.map((i) =>
+        i.id === item.id ? { ...i, status: 'FULL' } : i,
+      ),
+    });
   }
 
   private logEvent(
