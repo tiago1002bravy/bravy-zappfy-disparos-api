@@ -16,6 +16,10 @@ model Tenant {
   defaultInstanceName     String?
   defaultInstanceTokenEnc String?
   defaultParticipants     String[] @default([])
+  // Números (E.164 sem +) adicionados automaticamente no próximo grupo de qualquer
+  // shortlink do tenant quando ele rotaciona (item ACTIVE → FULL → pickItem).
+  // Vazio = feature desativada. Add não-admin via Uazapi addParticipants.
+  autoJoinPhones          String[] @default([])
   // Defaults aplicados em todo grupo criado (front/api/mcp). Override por chamada.
   defaultGroupAdmins      String[] @default([])
   defaultGroupDescription String?

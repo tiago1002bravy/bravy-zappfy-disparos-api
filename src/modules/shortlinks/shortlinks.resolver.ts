@@ -170,12 +170,15 @@ export class ShortlinksResolver {
           source: 'zappfy_confirmed',
         });
         // pula pro proximo
-        return this.pickItem({
+        const next = await this.pickItem({
           ...sl,
           items: sl.items.map((i) =>
             i.id === item.id ? { ...i, status: 'FULL', participantsCount: real } : i,
           ),
         });
+        // Auto-join: adiciona números configurados no tenant no próximo grupo
+        await this.tryAutoJoin(sl, next, conn.instanceToken, 'zappfy_confirmed');
+        return next;
       }
       // Estende budget — proximo recheck quando faltarem ~slack cliques
       const updated = await this.prisma.groupShortlinkItem.update({
@@ -246,12 +249,81 @@ export class ShortlinksResolver {
       `promove FULL por fallback (slug=${sl.slug} item=${item.id}): ` +
         `clicks=${item.clicks} >= hardCap=${sl.hardCap}, motivo=${failureReason}`,
     );
-    return this.pickItem({
+    const next = await this.pickItem({
       ...sl,
       items: sl.items.map((i) =>
         i.id === item.id ? { ...i, status: 'FULL' } : i,
       ),
     });
+    // Auto-join no fallback: precisa de uma conn ativa, então tenta resolver
+    // de novo. Se não tiver, registra que tentou e segue.
+    const conn = await this.resolveConn(sl);
+    await this.tryAutoJoin(sl, next, conn?.instanceToken ?? null, 'fallback_by_clicks');
+    return next;
+  }
+
+  /**
+   * Adiciona os números configurados em `tenant.autoJoinPhones` no próximo grupo
+   * da rotação. Chamado logo após promote_full + pickItem. Fire-and-forget:
+   * falha não bloqueia a promoção nem o redirect do user.
+   *
+   * Pré-requisitos pra funcionar:
+   * - `sl.tenant.autoJoinPhones` não vazio
+   * - `nextItem` existe (rotação encontrou próximo grupo ACTIVE)
+   * - `token` da conexão atual existe e é admin do grupo destino
+   *
+   * Em qualquer falha, registra event `auto_join` com payload contendo o motivo.
+   */
+  private async tryAutoJoin(
+    sl: SlWithItems,
+    nextItem: (GroupShortlinkItem & { group: Group }) | null,
+    token: string | null,
+    promoteSource: 'zappfy_confirmed' | 'fallback_by_clicks',
+  ): Promise<void> {
+    const phones = sl.tenant.autoJoinPhones ?? [];
+    if (!phones.length) return;
+    if (!nextItem) {
+      this.logEvent(sl.id, null, 'auto_join', {
+        ok: false,
+        reason: 'no_next_item',
+        promoteSource,
+      });
+      return;
+    }
+    if (!token) {
+      this.logEvent(sl.id, nextItem.id, 'auto_join', {
+        ok: false,
+        reason: 'no_connection',
+        promoteSource,
+        phones,
+      });
+      return;
+    }
+    try {
+      const resp = await this.zappfy.updateGroupParticipants(
+        token,
+        nextItem.group.remoteId,
+        'add',
+        phones,
+      );
+      this.logEvent(sl.id, nextItem.id, 'auto_join', {
+        ok: true,
+        promoteSource,
+        phones,
+        remoteId: nextItem.group.remoteId,
+        resp,
+      });
+    } catch (e) {
+      this.log.warn(`auto_join falhou (slug=${sl.slug}): ${(e as Error).message}`);
+      this.logEvent(sl.id, nextItem.id, 'auto_join', {
+        ok: false,
+        reason: 'zappfy_error',
+        error: (e as Error).message,
+        promoteSource,
+        phones,
+        remoteId: nextItem.group.remoteId,
+      });
+    }
   }
 
   private logEvent(

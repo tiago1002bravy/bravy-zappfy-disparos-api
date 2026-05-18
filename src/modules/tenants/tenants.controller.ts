@@ -10,6 +10,7 @@ class UpdateTenantDto {
   @IsOptional() @IsString() timezone?: string;
   @IsOptional() @IsUrl({ require_protocol: true }) failureWebhookUrl?: string | null;
   @IsOptional() @IsArray() @IsString({ each: true }) defaultParticipants?: string[];
+  @IsOptional() @IsArray() @IsString({ each: true }) autoJoinPhones?: string[];
 }
 
 class UpdateGroupDefaultsDto {
@@ -44,6 +45,7 @@ export class TenantsController {
       timezone: t.timezone,
       failureWebhookUrl: t.failureWebhookUrl,
       defaultParticipants: t.defaultParticipants,
+      autoJoinPhones: t.autoJoinPhones,
       defaultGroupAdmins: t.defaultGroupAdmins,
       defaultGroupDescription: t.defaultGroupDescription,
       defaultGroupPictureMediaId: t.defaultGroupPictureMediaId,
@@ -63,6 +65,12 @@ export class TenantsController {
         .map((p) => p.replace(/\D/g, ''))
         .filter((p) => p.length >= 10 && p.length <= 15);
     }
+    if (dto.autoJoinPhones !== undefined) {
+      data.autoJoinPhones = dto.autoJoinPhones
+        .flatMap((p) => p.split(/[\s,;]+/))
+        .map((p) => p.replace(/\D/g, ''))
+        .filter((p) => p.length >= 10 && p.length <= 15);
+    }
     const t = await this.prisma.withoutTenant((db) =>
       db.tenant.update({ where: { id: u.tenantId }, data }),
     );
@@ -73,6 +81,7 @@ export class TenantsController {
       timezone: t.timezone,
       failureWebhookUrl: t.failureWebhookUrl,
       defaultParticipants: t.defaultParticipants,
+      autoJoinPhones: t.autoJoinPhones,
     };
   }
 
