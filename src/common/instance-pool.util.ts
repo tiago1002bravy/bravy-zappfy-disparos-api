@@ -6,7 +6,11 @@ export interface PooledInstance {
   instanceTokenEnc: string;
 }
 
-const AUTO_DISABLE_THRESHOLD = 10;
+// 1000 = na prática, desligado. Auto-disable em 10 falhas era hostil pro caso
+// "instância sadia mas não é admin em todos os grupos da fila" — desativava a
+// primária toda vez que o batch tinha grupos sem admin, jogando 100% pro fallback.
+// Com 1000, só desativa quando há sinal real de instância morta/token inválido.
+const AUTO_DISABLE_THRESHOLD = 1000;
 
 export async function getOrderedPool(
   prisma: PrismaClient,
