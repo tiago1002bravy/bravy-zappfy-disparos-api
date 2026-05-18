@@ -20,6 +20,7 @@ import {
 import { decryptToken } from './common/crypto.util';
 import { ZappfyClient } from './modules/zappfy/zappfy.client';
 import { notifyFailure } from './queue/webhook-notify.util';
+import { getOrderedPool, recordInstanceFailure, recordInstanceSuccess } from './common/instance-pool.util';
 
 const log = (msg: string, extra?: unknown) =>
   console.log(`[worker] ${msg}`, extra ?? '');
@@ -147,7 +148,7 @@ const sendOrchestratorWorker = new Worker<SendMessageJobData>(
           } satisfies SendMessageSingleJobData,
           opts: {
             delay: cumulativeDelay,
-            attempts: 3,
+            attempts: 2,
             backoff: { type: 'exponential', delay: 5_000 },
             // Child failed NÃO bloqueia o parent finalize. Sem isso, qualquer
             // falha deixaria o schedule preso ACTIVE pra sempre.
@@ -170,9 +171,52 @@ const sendOrchestratorWorker = new Worker<SendMessageJobData>(
   },
 );
 
+type MessageWithMedias = {
+  text: string | null;
+  mentionAll: boolean;
+  pollChoices: string[];
+  pollSelectableCount: number | null;
+  medias: Array<{ kind: string; media: { s3Key: string; mime: string } }>;
+};
+
+async function sendMessageToGroup(
+  token: string,
+  groupRemoteId: string,
+  message: MessageWithMedias,
+): Promise<void> {
+  const mentions = message.mentionAll ? 'all' : undefined;
+  if (message.pollChoices.length > 0) {
+    await zappfy.sendPoll(token, {
+      number: groupRemoteId,
+      text: message.text ?? '',
+      choices: message.pollChoices,
+      selectableCount: message.pollSelectableCount ?? 1,
+    });
+  } else if (message.medias.length === 0 && message.text) {
+    await zappfy.sendText(token, { number: groupRemoteId, text: message.text, mentions });
+  } else {
+    const kindToType: Record<string, 'image' | 'video' | 'audio' | 'ptt' | 'document'> = {
+      IMAGE: 'image', VIDEO: 'video', AUDIO: 'audio', PTT: 'ptt', DOCUMENT: 'document',
+    };
+    for (let i = 0; i < message.medias.length; i++) {
+      const mm = message.medias[i];
+      const dataUri = await objectAsDataUri(mm.media.s3Key, mm.media.mime);
+      const explicitType = mm.kind === 'AUTO' ? undefined : kindToType[mm.kind];
+      await zappfy.sendMedia(token, {
+        number: groupRemoteId,
+        file: dataUri,
+        mime: mm.media.mime,
+        type: explicitType,
+        caption: i === 0 ? (message.text ?? undefined) : undefined,
+        mentions: i === 0 ? mentions : undefined,
+      });
+    }
+  }
+}
+
 /**
- * SINGLE SEND — processa 1 grupo por vez. Job rápido (~1-3s), sem risco de stall.
- * BullMQ escalona automaticamente via `delay` no opts (definido pelo orchestrator).
+ * SINGLE SEND — processa 1 grupo por vez com failover automatico entre instancias.
+ * Tenta a instancia primaria do schedule, depois as demais do pool do tenant.
  */
 const sendSingleWorker = new Worker<SendMessageSingleJobData>(
   QUEUE_SEND_MESSAGE_SINGLE,
@@ -196,83 +240,70 @@ const sendSingleWorker = new Worker<SendMessageSingleJobData>(
       return;
     }
 
-    const token = decryptToken(sched.instanceTokenEnc);
     const message = sched.message;
     const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } });
     const failureWebhookUrl = tenant?.failureWebhookUrl;
 
-    try {
-      const mentions = message.mentionAll ? 'all' : undefined;
-      const isPoll = message.pollChoices.length > 0;
-      if (isPoll) {
-        await zappfy.sendPoll(token, {
-          number: groupRemoteId,
-          text: message.text ?? '',
-          choices: message.pollChoices,
-          selectableCount: message.pollSelectableCount ?? 1,
-        });
-      } else if (message.medias.length === 0 && message.text) {
-        await zappfy.sendText(token, { number: groupRemoteId, text: message.text, mentions });
-      } else {
-        for (let i = 0; i < message.medias.length; i++) {
-          const mm = message.medias[i];
-          const dataUri = await objectAsDataUri(mm.media.s3Key, mm.media.mime);
-          const kindToType: Record<string, 'image' | 'video' | 'audio' | 'ptt' | 'document'> = {
-            IMAGE: 'image',
-            VIDEO: 'video',
-            AUDIO: 'audio',
-            PTT: 'ptt',
-            DOCUMENT: 'document',
-          };
-          const explicitType = mm.kind === 'AUTO' ? undefined : kindToType[mm.kind];
-          await zappfy.sendMedia(token, {
-            number: groupRemoteId,
-            file: dataUri,
-            mime: mm.media.mime,
-            type: explicitType,
-            caption: i === 0 ? (message.text ?? undefined) : undefined,
-            mentions: i === 0 ? mentions : undefined,
+    const pool = await getOrderedPool(prisma, tenantId, sched.instanceName);
+
+    if (pool.length > 0) {
+      const errors: string[] = [];
+      for (const inst of pool) {
+        try {
+          const token = decryptToken(inst.instanceTokenEnc);
+          await sendMessageToGroup(token, groupRemoteId, message);
+          await recordInstanceSuccess(prisma, inst.id);
+          await prisma.execution.create({
+            data: { tenantId, scheduleId, status: 'SUCCESS', groupRemoteId, instanceName: inst.instanceName },
           });
+          return;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          errors.push(`${inst.instanceName}: ${msg}`);
+          log(`failover: ${inst.instanceName} falhou para ${groupRemoteId}, tentando proxima`);
+          await recordInstanceFailure(prisma, inst.id);
         }
       }
+      const errorMsg = `Todas as ${pool.length} instancias falharam: ${errors.join(' | ')}`;
+      log(`single failed ${scheduleId} -> ${groupRemoteId}: ${errorMsg}`);
       await prisma.execution.create({
-        data: {
-          tenantId,
-          scheduleId,
-          status: 'SUCCESS',
-          groupRemoteId,
-        },
+        data: { tenantId, scheduleId, status: 'FAILED', groupRemoteId, errorMessage: errorMsg },
+      });
+      if (failureWebhookUrl) {
+        await notifyFailure(failureWebhookUrl, {
+          scheduleId, groupRemoteId, error: errorMsg, ranAt: new Date().toISOString(),
+        });
+      }
+      return;
+    }
+
+    // Fallback legacy: sem pool, usa token do schedule
+    try {
+      const token = decryptToken(sched.instanceTokenEnc);
+      await sendMessageToGroup(token, groupRemoteId, message);
+      await prisma.execution.create({
+        data: { tenantId, scheduleId, status: 'SUCCESS', groupRemoteId },
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log(`single failed ${scheduleId} -> ${groupRemoteId}: ${msg}`);
-      // Só registra Execution e dispara webhook na ÚLTIMA tentativa pra evitar duplicar
       const isLastAttempt = (job.attemptsMade ?? 0) + 1 >= (job.opts.attempts ?? 1);
       if (isLastAttempt) {
         await prisma.execution.create({
-          data: {
-            tenantId,
-            scheduleId,
-            status: 'FAILED',
-            groupRemoteId,
-            errorMessage: msg,
-          },
+          data: { tenantId, scheduleId, status: 'FAILED', groupRemoteId, errorMessage: msg },
         });
         if (failureWebhookUrl) {
           await notifyFailure(failureWebhookUrl, {
-            scheduleId,
-            groupRemoteId,
-            error: msg,
-            ranAt: new Date().toISOString(),
+            scheduleId, groupRemoteId, error: msg, ranAt: new Date().toISOString(),
           });
         }
       }
-      throw err; // BullMQ retry
+      throw err;
     }
   },
   {
     connection,
-    concurrency: 1, // anti-ban estrito: 1 envio por vez
+    concurrency: 1,
     lockDuration: 60_000,
   },
 );
@@ -300,6 +331,25 @@ const sendFinalizeWorker = new Worker<SendMessageFinalizeJobData>(
   },
 );
 
+async function applyGroupUpdate(
+  token: string,
+  sched: { groupRemoteId: string; target: string; newName: string | null; newDescription: string | null; newPictureMediaId: string | null },
+  tenantId: string,
+): Promise<void> {
+  if (sched.target === 'NAME' && sched.newName) {
+    await zappfy.updateGroupName(token, sched.groupRemoteId, sched.newName);
+  } else if (sched.target === 'DESCRIPTION' && sched.newDescription !== null) {
+    await zappfy.updateGroupDescription(token, sched.groupRemoteId, sched.newDescription ?? '');
+  } else if (sched.target === 'PICTURE' && sched.newPictureMediaId) {
+    const media = await prisma.mediaAsset.findFirst({
+      where: { id: sched.newPictureMediaId, tenantId },
+    });
+    if (!media) throw new Error('Picture media not found');
+    const dataUri = await objectAsDataUri(media.s3Key, media.mime);
+    await zappfy.updateGroupPicture(token, sched.groupRemoteId, dataUri);
+  }
+}
+
 const updateWorker = new Worker<UpdateGroupJobData>(
   QUEUE_UPDATE_GROUP,
   async (job) => {
@@ -315,47 +365,56 @@ const updateWorker = new Worker<UpdateGroupJobData>(
     await sleep(wait);
 
     const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } });
-    const token = decryptToken(sched.instanceTokenEnc);
+    const pool = await getOrderedPool(prisma, tenantId, sched.instanceName);
 
-    try {
-      if (sched.target === 'NAME' && sched.newName) {
-        await zappfy.updateGroupName(token, sched.groupRemoteId, sched.newName);
-      } else if (sched.target === 'DESCRIPTION' && sched.newDescription !== null) {
-        await zappfy.updateGroupDescription(token, sched.groupRemoteId, sched.newDescription ?? '');
-      } else if (sched.target === 'PICTURE' && sched.newPictureMediaId) {
-        const media = await prisma.mediaAsset.findFirst({
-          where: { id: sched.newPictureMediaId, tenantId },
-        });
-        if (!media) throw new Error('Picture media not found');
-        const dataUri = await objectAsDataUri(media.s3Key, media.mime);
-        await zappfy.updateGroupPicture(token, sched.groupRemoteId, dataUri);
+    if (pool.length > 0) {
+      const errors: string[] = [];
+      for (const inst of pool) {
+        try {
+          const token = decryptToken(inst.instanceTokenEnc);
+          await applyGroupUpdate(token, sched, tenantId);
+          await recordInstanceSuccess(prisma, inst.id);
+          await prisma.execution.create({
+            data: { tenantId, groupUpdateScheduleId, status: 'SUCCESS', groupRemoteId: sched.groupRemoteId, instanceName: inst.instanceName },
+          });
+          if (sched.type === 'ONCE') {
+            await prisma.groupUpdateSchedule.update({ where: { id: groupUpdateScheduleId }, data: { status: 'COMPLETED' } });
+          }
+          return;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          errors.push(`${inst.instanceName}: ${msg}`);
+          log(`failover update: ${inst.instanceName} falhou para ${sched.groupRemoteId}, tentando proxima`);
+          await recordInstanceFailure(prisma, inst.id);
+        }
       }
+      const errorMsg = `Todas as ${pool.length} instancias falharam: ${errors.join(' | ')}`;
       await prisma.execution.create({
-        data: {
-          tenantId,
-          groupUpdateScheduleId,
-          status: 'SUCCESS',
-          groupRemoteId: sched.groupRemoteId,
-        },
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      await prisma.execution.create({
-        data: {
-          tenantId,
-          groupUpdateScheduleId,
-          status: 'FAILED',
-          groupRemoteId: sched.groupRemoteId,
-          errorMessage: msg,
-        },
+        data: { tenantId, groupUpdateScheduleId, status: 'FAILED', groupRemoteId: sched.groupRemoteId, errorMessage: errorMsg },
       });
       if (tenant?.failureWebhookUrl) {
         await notifyFailure(tenant.failureWebhookUrl, {
-          groupUpdateScheduleId,
-          groupRemoteId: sched.groupRemoteId,
-          error: msg,
-          ranAt: new Date().toISOString(),
+          groupUpdateScheduleId, groupRemoteId: sched.groupRemoteId, error: errorMsg, ranAt: new Date().toISOString(),
         });
+      }
+    } else {
+      // Fallback legacy
+      const token = decryptToken(sched.instanceTokenEnc);
+      try {
+        await applyGroupUpdate(token, sched, tenantId);
+        await prisma.execution.create({
+          data: { tenantId, groupUpdateScheduleId, status: 'SUCCESS', groupRemoteId: sched.groupRemoteId },
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await prisma.execution.create({
+          data: { tenantId, groupUpdateScheduleId, status: 'FAILED', groupRemoteId: sched.groupRemoteId, errorMessage: msg },
+        });
+        if (tenant?.failureWebhookUrl) {
+          await notifyFailure(tenant.failureWebhookUrl, {
+            groupUpdateScheduleId, groupRemoteId: sched.groupRemoteId, error: msg, ranAt: new Date().toISOString(),
+          });
+        }
       }
     }
 

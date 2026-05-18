@@ -13,6 +13,7 @@ const TENANT_MODELS = new Set([
   'Schedule',
   'GroupUpdateSchedule',
   'Execution',
+  'Instance',
 ]);
 
 @Injectable()

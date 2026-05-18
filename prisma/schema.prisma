@@ -39,6 +39,7 @@ model Tenant {
   groupUpdateSchedules GroupUpdateSchedule[]
   executions           Execution[]
   apiKeys              ApiKey[]
+  instances            Instance[]
 }
 
 enum Role {
@@ -418,6 +419,25 @@ model GroupUpdateSchedule {
   @@index([tenantId])
 }
 
+model Instance {
+  id               String    @id @default(cuid())
+  tenantId         String
+  label            String
+  instanceName     String
+  instanceTokenEnc String
+  priority         Int       @default(0)
+  active           Boolean   @default(true)
+  lastFailedAt     DateTime?
+  failureCount     Int       @default(0)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, instanceName])
+  @@index([tenantId, active, priority])
+}
+
 enum ExecStatus {
   SUCCESS
   FAILED
@@ -432,6 +452,7 @@ model Execution {
   ranAt                 DateTime   @default(now())
   status                ExecStatus
   groupRemoteId         String?
+  instanceName          String?
   responsePayload       Json?
   errorMessage          String?
 

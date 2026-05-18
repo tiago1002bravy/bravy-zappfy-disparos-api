@@ -20,6 +20,7 @@ import { CalendarModule } from './modules/calendar/calendar.module';
 import { CronModule } from './modules/cron/cron.module';
 import { ZappfyModule } from './modules/zappfy/zappfy.module';
 import { HealthModule } from './modules/health/health.module';
+import { InstancesModule } from './modules/instances/instances.module';
 import { QueueModule } from './queue/queue.module';
 import { TimeoutInterceptor } from './common/interceptors/timeout.interceptor';
 import { RequestLoggerMiddleware } from './common/middleware/request-logger.middleware';
@@ -50,6 +51,7 @@ import { RequestLoggerMiddleware } from './common/middleware/request-logger.midd
     CalendarModule,
     CronModule,
     HealthModule,
+    InstancesModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
