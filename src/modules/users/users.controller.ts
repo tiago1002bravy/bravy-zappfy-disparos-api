@@ -76,18 +76,61 @@ export class UsersController {
       data.instanceTokenEnc = dto.instanceToken ? encryptToken(dto.instanceToken) : null;
     }
     if (Object.keys(data).length === 0) {
-      // Nada pra atualizar — retorna estado atual em vez de zerar acidentalmente
       const current = await this.prisma.user.findUnique({ where: { id: u.userId } });
       return {
         instanceName: current?.instanceName ?? null,
         hasInstanceToken: !!current?.instanceTokenEnc,
       };
     }
+
+    const oldUser = await this.prisma.user.findUnique({ where: { id: u.userId } });
+    const oldInstanceName = oldUser?.instanceName;
+
     const user = await this.prisma.user.update({ where: { id: u.userId }, data });
+
+    if (user.instanceName && user.instanceTokenEnc && oldInstanceName && user.instanceName !== oldInstanceName) {
+      await this.migrateActiveSchedules(u.tenantId, oldInstanceName, user.instanceName, user.instanceTokenEnc);
+    }
+
     return {
       instanceName: user.instanceName,
       hasInstanceToken: !!user.instanceTokenEnc,
     };
+  }
+
+  private async migrateActiveSchedules(
+    tenantId: string,
+    oldInstanceName: string,
+    newInstanceName: string,
+    newInstanceTokenEnc: string,
+  ) {
+    const now = new Date();
+
+    const [schedules, groupUpdates] = await Promise.all([
+      this.prisma.schedule.updateMany({
+        where: {
+          tenantId,
+          instanceName: oldInstanceName,
+          status: 'ACTIVE',
+          startAt: { gte: now },
+        },
+        data: { instanceName: newInstanceName, instanceTokenEnc: newInstanceTokenEnc },
+      }),
+      this.prisma.groupUpdateSchedule.updateMany({
+        where: {
+          tenantId,
+          instanceName: oldInstanceName,
+          status: 'ACTIVE',
+        },
+        data: { instanceName: newInstanceName, instanceTokenEnc: newInstanceTokenEnc },
+      }),
+    ]);
+
+    if (schedules.count || groupUpdates.count) {
+      console.log(
+        `[connection-migrate] ${schedules.count} schedules + ${groupUpdates.count} group-updates migrated from ${oldInstanceName} to ${newInstanceName}`,
+      );
+    }
   }
 
   @Get()
