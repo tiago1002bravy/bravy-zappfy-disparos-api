@@ -61,6 +61,44 @@ async function objectAsDataUri(key: string, mime: string): Promise<string> {
 }
 
 /**
+ * Retorna os remoteIds dos grupos que estão recebendo tráfego dos shortlinks
+ * do tenant AGORA — o primeiro item ACTIVE de cada shortlink (ordenado por
+ * `order asc`), que é onde o resolver manda o próximo clique cair.
+ *
+ * O orchestrator usa essa lista pra REORDENAR os targets do disparo, colocando
+ * esses grupos no início da fila. Motivo: pessoas que clicaram no shortlink
+ * agora estão chegando nesses grupos — a mensagem (especialmente "AO VIVO"
+ * às 20h) precisa chegar nelas ANTES de chegar nos grupos vazios, pra não
+ * perderem o início da live por causa do anti-ban delay incremental.
+ *
+ * Falha silenciosa: se algo der errado consultando, retorna `[]` e o disparo
+ * segue a ordem original do schedule. Nunca bloqueia o send.
+ */
+async function getShortlinkPriorityRemoteIds(tenantId: string): Promise<string[]> {
+  try {
+    const shortlinks = await prisma.groupShortlink.findMany({
+      where: { tenantId, active: true },
+      select: {
+        items: {
+          where: { status: 'ACTIVE' },
+          orderBy: { order: 'asc' },
+          take: 1,
+          select: { group: { select: { remoteId: true } } },
+        },
+      },
+    });
+    const ids: string[] = [];
+    for (const sl of shortlinks) {
+      if (sl.items.length) ids.push(sl.items[0].group.remoteId);
+    }
+    return ids;
+  } catch (err) {
+    log(`getShortlinkPriorityRemoteIds failed: ${(err as Error).message}`);
+    return [];
+  }
+}
+
+/**
  * ORCHESTRATOR — disparado no horário do schedule pelo BullMQ.
  *
  * Responsabilidades:
@@ -107,8 +145,8 @@ const sendOrchestratorWorker = new Worker<SendMessageJobData>(
         if (m.group.tenantId === tenantId) targetSet.add(m.group.remoteId);
       }
     }
-    const targets = Array.from(targetSet);
-    if (targets.length === 0) {
+    const rawTargets = Array.from(targetSet);
+    if (rawTargets.length === 0) {
       log(`schedule ${scheduleId} has no targets, marking COMPLETED`);
       if (sched.type === 'ONCE') {
         await prisma.schedule.update({
@@ -117,6 +155,24 @@ const sendOrchestratorWorker = new Worker<SendMessageJobData>(
         });
       }
       return;
+    }
+
+    // Prioriza grupos que estão recebendo tráfego dos shortlinks do tenant (primeiro
+    // ACTIVE item de cada shortlink ativo). Esses grupos têm gente nova entrando
+    // agora — precisam receber a mensagem ANTES dos outros pra não ver delay.
+    // Os demais grupos do schedule mantêm a ordem original depois.
+    const priorityRemoteIds = await getShortlinkPriorityRemoteIds(tenantId);
+    const targetsLookup = new Set(rawTargets);
+    const priorityInTargets = priorityRemoteIds.filter((id) => targetsLookup.has(id));
+    const prioritySet = new Set(priorityInTargets);
+    const targets = [
+      ...priorityInTargets,
+      ...rawTargets.filter((id) => !prioritySet.has(id)),
+    ];
+    if (priorityInTargets.length) {
+      log(
+        `orchestrator priorizou ${priorityInTargets.length} grupos do shortlink no schedule ${scheduleId}: ${priorityInTargets.join(', ')}`,
+      );
     }
 
     // Anti-ban: delay escalonado entre children (3-7s entre cada)
