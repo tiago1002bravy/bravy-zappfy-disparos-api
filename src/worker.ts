@@ -123,6 +123,9 @@ const sendOrchestratorWorker = new Worker<SendMessageJobData>(
         status: true,
         groupRemoteIds: true,
         groupListIds: true,
+        shortlinkRotationEnabled: true,
+        shortlinkSlugs: true,
+        shortlinkPrevCount: true,
       },
     });
     if (!sched) {
@@ -143,6 +146,45 @@ const sendOrchestratorWorker = new Worker<SendMessageJobData>(
       });
       for (const m of memberships) {
         if (m.group.tenantId === tenantId) targetSet.add(m.group.remoteId);
+      }
+    }
+
+    // Rotação dinâmica via shortlinks ativos (ativo + N anteriores). Quando
+    // sched.shortlinkRotationEnabled=true e tem slugs configurados, resolve no
+    // momento do disparo pra evitar lista grande de grupos antigos com leads
+    // frios. Comportamento: pra cada slug, pega o item ACTIVE atual + os
+    // shortlinkPrevCount items anteriores (status=FULL, order desc).
+    if (sched.shortlinkRotationEnabled && sched.shortlinkSlugs.length) {
+      const prevCount = sched.shortlinkPrevCount ?? 2;
+      for (const slug of sched.shortlinkSlugs) {
+        const sl = await prisma.groupShortlink.findFirst({
+          where: { tenantId, slug },
+          include: {
+            items: {
+              include: { group: true },
+              orderBy: { order: 'asc' },
+            },
+          },
+        });
+        if (!sl) {
+          log(`shortlinkRotation: slug "${slug}" não encontrado no tenant ${tenantId}, pulando`);
+          continue;
+        }
+        const active = sl.items.find((i) => i.status === 'ACTIVE');
+        if (!active) {
+          log(`shortlinkRotation: slug "${slug}" sem item ACTIVE, pulando`);
+          continue;
+        }
+        const previous = sl.items
+          .filter((i) => i.status === 'FULL' && i.order < active.order)
+          .sort((a, b) => b.order - a.order)
+          .slice(0, prevCount);
+        const resolved: string[] = [active.group.remoteId];
+        for (const p of previous) resolved.push(p.group.remoteId);
+        for (const rid of resolved) targetSet.add(rid);
+        log(
+          `shortlinkRotation: slug "${slug}" resolveu ${resolved.length} grupos (ativo + ${previous.length} anteriores) no schedule ${scheduleId}: ${resolved.join(', ')}`,
+        );
       }
     }
     const rawTargets = Array.from(targetSet);

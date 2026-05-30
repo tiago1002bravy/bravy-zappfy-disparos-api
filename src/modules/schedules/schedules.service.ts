@@ -13,6 +13,10 @@ interface CreateScheduleInput {
   instanceToken?: string;
   groupRemoteIds?: string[];
   groupListIds?: string[];
+  // Rotação dinâmica via shortlinks — ativo + N anteriores
+  shortlinkRotationEnabled?: boolean;
+  shortlinkSlugs?: string[];
+  shortlinkPrevCount?: number;
   type: ScheduleType;
   startAt: string; // ISO
   endAt?: string | null;
@@ -52,8 +56,14 @@ export class SchedulesService {
       cron = dto.cron;
     }
 
-    if (!dto.groupRemoteIds?.length && !dto.groupListIds?.length) {
-      throw new BadRequestException('Provide at least one of groupRemoteIds or groupListIds');
+    // Permite criar schedule sem groups estáticos se shortlinkRotationEnabled
+    // estiver ativo (worker resolve dinamicamente no momento do disparo).
+    const hasShortlinkRotation =
+      dto.shortlinkRotationEnabled === true && (dto.shortlinkSlugs?.length ?? 0) > 0;
+    if (!dto.groupRemoteIds?.length && !dto.groupListIds?.length && !hasShortlinkRotation) {
+      throw new BadRequestException(
+        'Provide at least one of groupRemoteIds, groupListIds, or enable shortlinkRotation with shortlinkSlugs',
+      );
     }
 
     // Resolve conexão: explícita do dto > usuário logado > tenant default
@@ -78,6 +88,9 @@ export class SchedulesService {
         instanceTokenEnc: encryptToken(resolvedInstanceToken),
         groupRemoteIds: dto.groupRemoteIds ?? [],
         groupListIds: dto.groupListIds ?? [],
+        shortlinkRotationEnabled: dto.shortlinkRotationEnabled ?? false,
+        shortlinkSlugs: dto.shortlinkSlugs ?? [],
+        shortlinkPrevCount: dto.shortlinkPrevCount ?? 2,
         type: dto.type,
         startAt: new Date(dto.startAt),
         endAt: dto.endAt ? new Date(dto.endAt) : null,
@@ -244,6 +257,13 @@ export class SchedulesService {
         ...(dto.instanceName ? { instanceName: dto.instanceName } : {}),
         ...(dto.instanceToken ? { instanceTokenEnc: encryptToken(dto.instanceToken) } : {}),
         ...(dto.messageId ? { messageId: dto.messageId } : {}),
+        ...(dto.shortlinkRotationEnabled !== undefined
+          ? { shortlinkRotationEnabled: dto.shortlinkRotationEnabled }
+          : {}),
+        ...(dto.shortlinkSlugs !== undefined ? { shortlinkSlugs: dto.shortlinkSlugs } : {}),
+        ...(dto.shortlinkPrevCount !== undefined
+          ? { shortlinkPrevCount: dto.shortlinkPrevCount }
+          : {}),
       },
     });
 

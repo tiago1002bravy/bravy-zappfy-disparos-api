@@ -14,6 +14,7 @@ import { ScheduleType } from '@prisma/client';
 import {
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsDateString,
   IsEnum,
   IsInt,
@@ -33,6 +34,9 @@ class CreateScheduleDto {
   @IsOptional() @IsString() instanceToken?: string;
   @IsOptional() @IsArray() @IsString({ each: true }) groupRemoteIds?: string[];
   @IsOptional() @IsArray() @IsString({ each: true }) groupListIds?: string[];
+  @IsOptional() @IsBoolean() shortlinkRotationEnabled?: boolean;
+  @IsOptional() @IsArray() @IsString({ each: true }) shortlinkSlugs?: string[];
+  @IsOptional() @IsInt() @Min(0) @Max(10) shortlinkPrevCount?: number;
   @IsEnum(ScheduleType) type!: ScheduleType;
   @IsDateString() startAt!: string;
   @IsOptional() @IsDateString() endAt?: string;
@@ -50,6 +54,9 @@ class PatchScheduleDto {
   @IsOptional() @IsString() instanceToken?: string;
   @IsOptional() @IsArray() @IsString({ each: true }) groupRemoteIds?: string[];
   @IsOptional() @IsArray() @IsString({ each: true }) groupListIds?: string[];
+  @IsOptional() @IsBoolean() shortlinkRotationEnabled?: boolean;
+  @IsOptional() @IsArray() @IsString({ each: true }) shortlinkSlugs?: string[];
+  @IsOptional() @IsInt() @Min(0) @Max(10) shortlinkPrevCount?: number;
   @IsOptional() @IsEnum(ScheduleType) type?: ScheduleType;
   @IsOptional() @IsDateString() startAt?: string;
   @IsOptional() @IsDateString() endAt?: string | null;
@@ -85,7 +92,8 @@ export class SchedulesController {
     if (dto.action === 'cancel') return this.svc.cancel(id);
     // Reagendar (qualquer outro campo presente)
     const editableKeys = [
-      'messageId', 'instanceName', 'instanceToken', 'groupRemoteIds',
+      'messageId', 'instanceName', 'instanceToken', 'groupRemoteIds', 'groupListIds',
+      'shortlinkRotationEnabled', 'shortlinkSlugs', 'shortlinkPrevCount',
       'type', 'startAt', 'endAt', 'timezone', 'time', 'weekdays', 'cron',
     ] as const;
     const hasEdit = editableKeys.some((k) => dto[k] !== undefined);

@@ -371,6 +371,15 @@ model Schedule {
   instanceTokenEnc String
   groupRemoteIds   String[]
   groupListIds     String[]       @default([])
+  // Rotação dinâmica baseada em shortlinks ATIVOS do tenant. Quando
+  // shortlinkRotationEnabled=true, worker ignora groupRemoteIds estatico
+  // e resolve no momento do disparo: pra cada slug, pega o item ACTIVE
+  // atual + shortlinkPrevCount items anteriores (status=FULL, order desc).
+  // Permite disparar so pra grupos quentes sem manter lista enorme de
+  // grupos antigos com leads frios.
+  shortlinkRotationEnabled Boolean @default(false)
+  shortlinkSlugs           String[] @default([])
+  shortlinkPrevCount       Int     @default(2)
   type             ScheduleType
   startAt          DateTime
   endAt            DateTime?
