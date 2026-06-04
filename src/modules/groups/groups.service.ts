@@ -5,14 +5,62 @@ import { StorageService } from '../media/storage.service';
 import { currentUserId, requireTenantId } from '../../common/tenant-context';
 import { TenantsController } from '../tenants/tenants.controller';
 import { UsersController } from '../users/users.controller';
+import { getPoolConnections, type PoolConn } from '../../common/instance-pool.util';
 
 @Injectable()
 export class GroupsService {
+  /** Failover de pool nas operações de grupo. Ligado por padrão; OPS_POOL_FAILOVER=false volta ao legado. */
+  private readonly poolFailover = process.env.OPS_POOL_FAILOVER !== 'false';
+
   constructor(
     private prisma: PrismaService,
     private zappfy: ZappfyClient,
     private storage: StorageService,
   ) {}
+
+  /**
+   * Resolve UMA conexão pra operações que gravam identidade (criar grupo):
+   * usa o par explícito se veio; senão prefere a conexão atual do usuário SE
+   * estiver viva no pool, caindo pra 1ª viva do pool. Flag off = comportamento
+   * legado (só a conexão do usuário).
+   */
+  private async resolveLiveConn(
+    instanceName?: string,
+    instanceToken?: string,
+  ): Promise<PoolConn | null> {
+    if (instanceName && instanceToken) return { instanceName, token: instanceToken };
+    const userConn = await UsersController.resolveConnection(this.prisma, currentUserId());
+    if (!this.poolFailover) {
+      return userConn ? { instanceName: userConn.instanceName, token: userConn.instanceToken } : null;
+    }
+    const conns = await getPoolConnections(this.prisma, requireTenantId(), userConn?.instanceName);
+    return conns[0] ?? null;
+  }
+
+  /**
+   * Executa fn(token) com failover: tenta o token recebido (caminho feliz) e,
+   * se falhar, varre as conexões vivas do pool. Flag off = só o token recebido.
+   * Pra operações que agem no grupo via remoteId (rename, add/promote, foto…).
+   */
+  private async withFailover<T>(
+    receivedToken: string,
+    preferredInstanceName: string | undefined,
+    fn: (token: string) => Promise<T>,
+  ): Promise<T> {
+    if (!this.poolFailover) return fn(receivedToken);
+    const conns = await getPoolConnections(this.prisma, requireTenantId(), preferredInstanceName);
+    const tokens: string[] = [receivedToken];
+    for (const c of conns) if (!tokens.includes(c.token)) tokens.push(c.token);
+    let lastErr: unknown;
+    for (const t of tokens) {
+      try {
+        return await fn(t);
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    throw lastErr;
+  }
 
   async createGroup(
     instanceName: string | undefined,
@@ -29,9 +77,9 @@ export class GroupsService {
     let mergedParticipants = participants;
 
     if (!resolvedInstanceName || !resolvedInstanceToken) {
-      const conn = await UsersController.resolveConnection(this.prisma, currentUserId());
+      const conn = await this.resolveLiveConn();
       resolvedInstanceName = resolvedInstanceName || conn?.instanceName || undefined;
-      resolvedInstanceToken = resolvedInstanceToken || conn?.instanceToken || undefined;
+      resolvedInstanceToken = resolvedInstanceToken || conn?.token || undefined;
     }
 
     if (!resolvedInstanceName || !resolvedInstanceToken) {
@@ -196,10 +244,14 @@ export class GroupsService {
     if (!group) throw new NotFoundException('Group not found');
 
     if (dto.name !== undefined) {
-      await this.zappfy.updateGroupName(instanceToken, group.remoteId, dto.name);
+      await this.withFailover(instanceToken, group.instanceName, (tk) =>
+        this.zappfy.updateGroupName(tk, group.remoteId, dto.name!),
+      );
     }
     if (dto.description !== undefined) {
-      await this.zappfy.updateGroupDescription(instanceToken, group.remoteId, dto.description);
+      await this.withFailover(instanceToken, group.instanceName, (tk) =>
+        this.zappfy.updateGroupDescription(tk, group.remoteId, dto.description!),
+      );
     }
     let pictureUrl: string | undefined;
     if (dto.pictureMediaId) {
@@ -207,7 +259,9 @@ export class GroupsService {
       if (!media) throw new NotFoundException('Media not found');
       const dataUri = await this.storage.objectAsDataUri(media.s3Key, media.mime);
       pictureUrl = await this.storage.presignedGetUrl(media.s3Key, 600);
-      await this.zappfy.updateGroupPicture(instanceToken, group.remoteId, dataUri);
+      await this.withFailover(instanceToken, group.instanceName, (tk) =>
+        this.zappfy.updateGroupPicture(tk, group.remoteId, dataUri),
+      );
     }
 
     return this.prisma.group.update({
@@ -235,21 +289,15 @@ export class GroupsService {
       throw new BadRequestException('participants must not be empty');
     }
 
-    const addResp = await this.zappfy.updateGroupParticipants(
-      instanceToken,
-      group.remoteId,
-      'add',
-      participants,
+    const addResp = await this.withFailover(instanceToken, group.instanceName, (tk) =>
+      this.zappfy.updateGroupParticipants(tk, group.remoteId, 'add', participants),
     );
 
     let promoteResp: unknown = null;
     if (asAdmin) {
       try {
-        promoteResp = await this.zappfy.updateGroupParticipants(
-          instanceToken,
-          group.remoteId,
-          'promote',
-          participants,
+        promoteResp = await this.withFailover(instanceToken, group.instanceName, (tk) =>
+          this.zappfy.updateGroupParticipants(tk, group.remoteId, 'promote', participants),
         );
       } catch (err) {
         promoteResp = { error: err instanceof Error ? err.message : String(err) };
@@ -270,13 +318,13 @@ export class GroupsService {
     if (!group) throw new NotFoundException('Group not found');
     const out: Record<string, unknown> = {};
     if (opts.locked !== undefined) {
-      out.locked = await this.zappfy.updateGroupLocked(instanceToken, group.remoteId, opts.locked);
+      out.locked = await this.withFailover(instanceToken, group.instanceName, (tk) =>
+        this.zappfy.updateGroupLocked(tk, group.remoteId, opts.locked!),
+      );
     }
     if (opts.announce !== undefined) {
-      out.announce = await this.zappfy.updateGroupAnnounce(
-        instanceToken,
-        group.remoteId,
-        opts.announce,
+      out.announce = await this.withFailover(instanceToken, group.instanceName, (tk) =>
+        this.zappfy.updateGroupAnnounce(tk, group.remoteId, opts.announce!),
       );
     }
     return out;
@@ -293,7 +341,9 @@ export class GroupsService {
     if (!group) throw new NotFoundException('Group not found');
     const payload = await this.resolvePictureSource(source);
     if (!payload) throw new BadRequestException('Provide mediaId | dataUri | imageUrl');
-    await this.zappfy.updateGroupPicture(instanceToken, group.remoteId, payload);
+    await this.withFailover(instanceToken, group.instanceName, (tk) =>
+      this.zappfy.updateGroupPicture(tk, group.remoteId, payload),
+    );
     return { ok: true };
   }
 
@@ -310,7 +360,9 @@ export class GroupsService {
     if (!participants.length) {
       throw new BadRequestException('participants must not be empty');
     }
-    return this.zappfy.updateGroupParticipants(instanceToken, group.remoteId, action, participants);
+    return this.withFailover(instanceToken, group.instanceName, (tk) =>
+      this.zappfy.updateGroupParticipants(tk, group.remoteId, action, participants),
+    );
   }
 
   // ====== bulk: criar N grupos sequenciais (ex: #5 .. #14) ======
@@ -344,9 +396,9 @@ export class GroupsService {
     let resolvedInstanceName = input.instanceName;
     let resolvedInstanceToken = input.instanceToken;
     if (!resolvedInstanceName || !resolvedInstanceToken) {
-      const conn = await UsersController.resolveConnection(this.prisma, currentUserId());
+      const conn = await this.resolveLiveConn();
       resolvedInstanceName = resolvedInstanceName || conn?.instanceName || undefined;
-      resolvedInstanceToken = resolvedInstanceToken || conn?.instanceToken || undefined;
+      resolvedInstanceToken = resolvedInstanceToken || conn?.token || undefined;
     }
     if (!resolvedInstanceName || !resolvedInstanceToken) {
       throw new BadRequestException('Sem conexão WhatsApp configurada');

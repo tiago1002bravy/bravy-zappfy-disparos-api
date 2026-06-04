@@ -1,9 +1,36 @@
 import { PrismaClient } from '@prisma/client';
+import { decryptToken } from './crypto.util';
 
 export interface PooledInstance {
   id: string;
   instanceName: string;
   instanceTokenEnc: string;
+}
+
+export interface PoolConn {
+  instanceName: string;
+  token: string;
+}
+
+/**
+ * Conexões VIVAS do pool (instâncias active:true) já com token decifrado e prontas
+ * pra uso, ordenadas por prioridade. `preferredInstanceName` (ex: a conexão atual
+ * do usuário) vai pra frente quando existe e está ativa — assim o caminho feliz
+ * (conexão atual funcionando) não muda; o resto do pool é só fallback.
+ *
+ * Usar pra dar failover a qualquer operação que fale com o WhatsApp: tenta a 1ª,
+ * se ela falhar/timeout, tenta a próxima. Lista vazia = nenhuma instância ativa.
+ */
+export async function getPoolConnections(
+  prisma: PrismaClient,
+  tenantId: string,
+  preferredInstanceName?: string,
+): Promise<PoolConn[]> {
+  const pool = await getOrderedPool(prisma, tenantId, preferredInstanceName);
+  return pool.map((p) => ({
+    instanceName: p.instanceName,
+    token: decryptToken(p.instanceTokenEnc),
+  }));
 }
 
 // 1000 = na prática, desligado. Auto-disable em 10 falhas era hostil pro caso
