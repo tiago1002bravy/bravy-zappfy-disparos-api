@@ -2,7 +2,12 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ZappfyClient } from '../zappfy/zappfy.client';
 import { resolveShortlinkConnection, type ShortlinkConn } from './shortlink-connection.helper';
+import { getOrderedPool } from '../../common/instance-pool.util';
+import { decryptToken } from '../../common/crypto.util';
 import type { GroupShortlink, GroupShortlinkItem, Group, Tenant, Prisma } from '@prisma/client';
+
+/** Candidato de conexão pra resolver invite/contagem do shortlink. */
+type ConnCandidate = { instanceName: string; token: string; timeoutMs?: number };
 
 type SlWithItems = GroupShortlink & {
   tenant: Tenant;
@@ -16,6 +21,19 @@ export type ResolveResult =
 @Injectable()
 export class ShortlinksResolver {
   private readonly log = new Logger('ShortlinksResolver');
+
+  /**
+   * Failover de pool no resolver (refresh/recheck). LIGADO por padrão.
+   * Botão de pânico: setar env SHORTLINK_POOL_FAILOVER=false volta ao comportamento
+   * legado (1 conexão do criador, timeout 90s) sem precisar reverter código.
+   */
+  private readonly poolFailover = process.env.SHORTLINK_POOL_FAILOVER !== 'false';
+  /** Timeout curto por tentativa quando varre o pool — o redirect é caminho de receita. */
+  private readonly resolverTimeoutMs = Number(process.env.SHORTLINK_RESOLVER_TIMEOUT_MS) || 8_000;
+  /** Cache em memória: remoteId -> instanceName que funcionou por último (evita varrer o pool). */
+  private readonly lastWorking = new Map<string, string>();
+  /** Guard anti-thundering-herd: só 1 recheck por item por vez. */
+  private readonly recheckInFlight = new Set<string>();
 
   constructor(
     private prisma: PrismaService,
@@ -132,79 +150,126 @@ export class ShortlinksResolver {
     return resolveShortlinkConnection(this.prisma, sl.tenantId, sl.createdById);
   }
 
+  /**
+   * Lista de conexões a tentar pra falar com o WhatsApp deste grupo.
+   * - Flag OFF: comportamento legado — só a conexão do criador (1 item, timeout padrão 90s).
+   * - Flag ON: pool de instâncias ATIVAS (getOrderedPool), com a última que funcionou
+   *   pra este grupo na frente, e timeout curto por tentativa.
+   * Devolve [] se não houver nenhuma conexão utilizável.
+   */
+  private async connCandidates(sl: SlWithItems, remoteId: string): Promise<ConnCandidate[]> {
+    if (!this.poolFailover) {
+      const conn = await this.resolveConn(sl);
+      return conn ? [{ instanceName: conn.instanceName, token: conn.instanceToken }] : [];
+    }
+    const pool = await getOrderedPool(this.prisma, sl.tenantId);
+    const list: ConnCandidate[] = pool.map((p) => ({
+      instanceName: p.instanceName,
+      token: decryptToken(p.instanceTokenEnc),
+      timeoutMs: this.resolverTimeoutMs,
+    }));
+    const lw = this.lastWorking.get(remoteId);
+    if (lw) {
+      list.sort((a, b) => (a.instanceName === lw ? -1 : b.instanceName === lw ? 1 : 0));
+    }
+    return list;
+  }
+
   private async recheckAndPromote(
     sl: SlWithItems,
     item: GroupShortlinkItem & { group: Group },
   ): Promise<(GroupShortlinkItem & { group: Group }) | null> {
-    const conn = await this.resolveConn(sl);
-    if (!conn) {
-      this.log.warn(`recheck pulado — nenhum OWNER com conn (slug=${sl.slug})`);
-      this.logEvent(sl.id, item.id, 'no_connection', { phase: 'recheck' });
-      // Fallback de segurança: se já passou do hardCap em CLIQUES, presume cheio
-      // e promove próximo. Evita continuar mandando galera pra grupo que provavelmente
-      // já estourou no WhatsApp.
-      return this.maybePromoteFullByClicks(sl, item, 'no_connection');
+    // Anti-thundering-herd: se outro request já está rechecando este item, não
+    // dispara N chamadas concorrentes à Uazapi — devolve o item como está.
+    if (this.poolFailover && this.recheckInFlight.has(item.id)) {
+      return item;
     }
+    if (this.poolFailover) this.recheckInFlight.add(item.id);
     try {
-      const token = conn.instanceToken;
-      const info = await this.zappfy.getGroupInfo(token, item.group.remoteId, {
-        getInviteLink: false,
-        force: true,
-      });
-      const real = info.participants?.length ?? 0;
-      const slack = sl.hardCap - real;
+      const cands = await this.connCandidates(sl, item.group.remoteId);
+      if (!cands.length) {
+        this.log.warn(`recheck pulado — sem conexão utilizável (slug=${sl.slug})`);
+        this.logEvent(sl.id, item.id, 'no_connection', { phase: 'recheck' });
+        return this.maybePromoteFullByClicks(sl, item, 'no_connection');
+      }
 
-      if (real >= sl.hardCap || slack <= 0) {
-        await this.prisma.groupShortlinkItem.update({
+      let lastErr: string | null = null;
+      for (const c of cands) {
+        let real: number;
+        try {
+          const info = await this.zappfy.getGroupInfo(c.token, item.group.remoteId, {
+            getInviteLink: false,
+            force: true,
+            timeoutMs: c.timeoutMs,
+          });
+          real = info.participants?.length ?? 0;
+        } catch (e) {
+          lastErr = `${c.instanceName}: ${(e as Error).message}`;
+          continue; // instância caiu/timeout → tenta a próxima do pool
+        }
+        // Em modo pool, real=0 é quase sempre instância não-membro / resposta vazia
+        // não-confiável: não decide FULL com base nisso, tenta a próxima.
+        if (real === 0 && this.poolFailover) {
+          lastErr = `${c.instanceName}: zero participantes (provável não-membro)`;
+          continue;
+        }
+
+        // contagem confiável — memoriza a conexão boa pra este grupo
+        this.lastWorking.set(item.group.remoteId, c.instanceName);
+        const slack = sl.hardCap - real;
+
+        if (real >= sl.hardCap || slack <= 0) {
+          await this.prisma.groupShortlinkItem.update({
+            where: { id: item.id },
+            data: { participantsCount: real, lastCheckedAt: new Date(), status: 'FULL' },
+          });
+          this.logEvent(sl.id, item.id, 'promote_full', {
+            participantsCount: real,
+            hardCap: sl.hardCap,
+            clicksAtPromotion: item.clicks,
+            source: 'zappfy_confirmed',
+            instance: c.instanceName,
+          });
+          const next = await this.pickItem({
+            ...sl,
+            items: sl.items.map((i) =>
+              i.id === item.id ? { ...i, status: 'FULL', participantsCount: real } : i,
+            ),
+          });
+          await this.tryAutoJoin(sl, next, c.token, 'zappfy_confirmed');
+          return next;
+        }
+
+        // Estende budget — proximo recheck quando faltarem ~slack cliques
+        const updated = await this.prisma.groupShortlinkItem.update({
           where: { id: item.id },
           data: {
             participantsCount: real,
             lastCheckedAt: new Date(),
-            status: 'FULL',
+            nextCheckAtClicks: item.clicks + slack,
           },
+          include: { group: true },
         });
-        this.logEvent(sl.id, item.id, 'promote_full', {
+        this.logEvent(sl.id, item.id, 'recheck', {
           participantsCount: real,
-          hardCap: sl.hardCap,
-          clicksAtPromotion: item.clicks,
-          source: 'zappfy_confirmed',
-        });
-        // pula pro proximo
-        const next = await this.pickItem({
-          ...sl,
-          items: sl.items.map((i) =>
-            i.id === item.id ? { ...i, status: 'FULL', participantsCount: real } : i,
-          ),
-        });
-        // Auto-join: adiciona números configurados no tenant no próximo grupo
-        await this.tryAutoJoin(sl, next, conn.instanceToken, 'zappfy_confirmed');
-        return next;
-      }
-      // Estende budget — proximo recheck quando faltarem ~slack cliques
-      const updated = await this.prisma.groupShortlinkItem.update({
-        where: { id: item.id },
-        data: {
-          participantsCount: real,
-          lastCheckedAt: new Date(),
+          slack,
           nextCheckAtClicks: item.clicks + slack,
-        },
-        include: { group: true },
-      });
-      this.logEvent(sl.id, item.id, 'recheck', {
-        participantsCount: real,
-        slack,
-        nextCheckAtClicks: item.clicks + slack,
-        clicksAtRecheck: item.clicks,
-      });
-      return updated;
-    } catch (e) {
-      this.log.warn(`zappfy recheck falhou: ${(e as Error).message}`);
+          clicksAtRecheck: item.clicks,
+          instance: c.instanceName,
+        });
+        return updated;
+      }
+
+      // nenhuma conexão conseguiu contar → fallback por cliques (última rede)
+      this.log.warn(`zappfy recheck falhou em todas as conexões: ${lastErr}`);
       this.logEvent(sl.id, item.id, 'zappfy_error', {
         phase: 'recheck',
-        error: (e as Error).message,
+        error: lastErr,
+        triedAll: true,
       });
-      // Mesmo fallback do caminho "sem conn": se clicks >= hardCap, presume cheio
       return this.maybePromoteFullByClicks(sl, item, 'zappfy_error');
+    } finally {
+      if (this.poolFailover) this.recheckInFlight.delete(item.id);
     }
   }
 
@@ -256,9 +321,9 @@ export class ShortlinksResolver {
       ),
     });
     // Auto-join no fallback: precisa de uma conn ativa, então tenta resolver
-    // de novo. Se não tiver, registra que tentou e segue.
-    const conn = await this.resolveConn(sl);
-    await this.tryAutoJoin(sl, next, conn?.instanceToken ?? null, 'fallback_by_clicks');
+    // de novo (pool vivo quando failover ligado). Se não tiver, registra e segue.
+    const cands = await this.connCandidates(sl, next?.group.remoteId ?? '');
+    await this.tryAutoJoin(sl, next, cands[0]?.token ?? null, 'fallback_by_clicks');
     return next;
   }
 
@@ -350,13 +415,19 @@ export class ShortlinksResolver {
     sl: SlWithItems,
   ): Promise<(GroupShortlinkItem & { group: Group }) | null> {
     if (!sl.autoCreateInstance) return null;
-    const conn = await this.resolveConn(sl);
+    const cands = await this.connCandidates(sl, '');
+    const conn = cands[0];
     if (!conn) {
-      this.log.warn(`auto-create pulado — sem OWNER com conn (slug=${sl.slug})`);
+      this.log.warn(`auto-create pulado — sem conexão utilizável (slug=${sl.slug})`);
       this.logEvent(sl.id, null, 'no_connection', { phase: 'auto_create' });
       return null;
     }
-    const token = conn.instanceToken;
+    const token = conn.token;
+    // Registra o grupo com a instância que de fato criou (pool vivo quando failover
+    // ligado); no modo legado, mantém o autoCreateInstance configurado.
+    const creatorInstance = this.poolFailover
+      ? conn.instanceName
+      : (sl.autoCreateInstance as string);
 
     const n = sl.items.length + 1;
     const tpl = sl.autoCreateTemplate ?? 'Grupo {N}';
@@ -391,7 +462,7 @@ export class ShortlinksResolver {
     const group = await this.prisma.group.create({
       data: {
         tenantId: sl.tenantId,
-        instanceName: sl.autoCreateInstance,
+        instanceName: creatorInstance,
         remoteId: created.id,
         name,
         syncedAt: new Date(),
@@ -421,22 +492,44 @@ export class ShortlinksResolver {
 
   // === refresh invite individual ===
   private async refreshInvite(sl: SlWithItems, item: GroupShortlinkItem & { group: Group }) {
-    const conn = await this.resolveConn(sl);
-    if (!conn) {
+    const cands = await this.connCandidates(sl, item.group.remoteId);
+    if (!cands.length) {
       this.logEvent(sl.id, item.id, 'no_connection', { phase: 'refresh_invite' });
       return null;
     }
-    const token = conn.instanceToken;
-    const info = await this.zappfy.getGroupInfo(token, item.group.remoteId, {
-      getInviteLink: true,
-      force: true,
+    let lastErr: string | null = null;
+    for (const c of cands) {
+      try {
+        const info = await this.zappfy.getGroupInfo(c.token, item.group.remoteId, {
+          getInviteLink: true,
+          force: true,
+          timeoutMs: c.timeoutMs,
+        });
+        // sem inviteLink = instância viva mas não-admin do grupo → tenta a próxima
+        if (!info.inviteLink) {
+          lastErr = `${c.instanceName}: sem invite (provável não-admin)`;
+          continue;
+        }
+        this.lastWorking.set(item.group.remoteId, c.instanceName);
+        await this.prisma.groupShortlinkItem.update({
+          where: { id: item.id },
+          data: { currentInviteUrl: info.inviteLink, lastRefreshedAt: new Date() },
+        });
+        this.logEvent(sl.id, item.id, 'invite_refresh', {
+          source: 'on_demand',
+          instance: c.instanceName,
+        });
+        return info.inviteLink;
+      } catch (e) {
+        lastErr = `${c.instanceName}: ${(e as Error).message}`;
+        continue;
+      }
+    }
+    this.logEvent(sl.id, item.id, 'no_connection', {
+      phase: 'refresh_invite',
+      triedAll: true,
+      error: lastErr,
     });
-    if (!info.inviteLink) return null;
-    await this.prisma.groupShortlinkItem.update({
-      where: { id: item.id },
-      data: { currentInviteUrl: info.inviteLink, lastRefreshedAt: new Date() },
-    });
-    this.logEvent(sl.id, item.id, 'invite_refresh', { source: 'on_demand' });
-    return info.inviteLink;
+    return null;
   }
 }

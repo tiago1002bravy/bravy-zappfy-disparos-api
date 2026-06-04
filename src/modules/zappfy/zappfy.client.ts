@@ -62,10 +62,10 @@ const BASE = process.env.ZAPPFY_BASE_URL ?? 'https://free.uazapi.com';
 export class ZappfyClient {
   private readonly log = new Logger('ZappfyClient');
 
-  private http(token: string): AxiosInstance {
+  private http(token: string, timeoutMs = 90_000): AxiosInstance {
     return axios.create({
       baseURL: BASE,
-      timeout: 90_000,
+      timeout: timeoutMs,
       headers: { token, 'Content-Type': 'application/json' },
     });
   }
@@ -139,9 +139,9 @@ export class ZappfyClient {
   async getGroupInfo(
     token: string,
     groupId: string,
-    opts: { getInviteLink?: boolean; force?: boolean } = {},
+    opts: { getInviteLink?: boolean; force?: boolean; timeoutMs?: number } = {},
   ): Promise<ZappfyGroupInfo> {
-    const { data } = await this.http(token).post('/group/info', {
+    const { data } = await this.http(token, opts.timeoutMs).post('/group/info', {
       groupjid: groupId,
       getInviteLink: opts.getInviteLink ?? false,
       force: opts.force ?? false,
