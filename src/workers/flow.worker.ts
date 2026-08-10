@@ -12,7 +12,6 @@ import { FlowConfig, FlowContextData, renderTokens } from '../modules/flows/flow
 import { decryptToken } from '../common/crypto.util';
 import { normalizeBrPhone } from '../common/phone.util';
 import { ZappfyClient } from '../modules/zappfy/zappfy.client';
-import { getPoolConnections } from '../common/instance-pool.util';
 
 const log = (msg: string) => console.log(`[worker:flow] ${msg}`);
 
@@ -113,12 +112,29 @@ export function createFlowWorkers(deps: { connection: IORedis; prisma: PrismaCli
       }
       if (candidates.length === 0) return;
 
-      // 3. Exclusão por grupo (membros do grupo NÃO recebem convite)
+      // 3. Exclusão por grupo (membros do grupo NÃO recebem convite).
+      // Só quem participa do grupo consegue ler os membros — tenta as conexões
+      // pessoais dos usuários (padrão do resolver de shortlinks) e TODAS as
+      // instâncias Uazapi, ativas primeiro (leitura é inofensiva).
       if (config.excludeGroupRemoteId) {
-        try {
-          const conns = await getPoolConnections(prisma, tenantId);
-          if (conns.length) {
-            const info = await zappfy.getGroupInfo(conns[0].token, config.excludeGroupRemoteId, {
+        const users = await prisma.user.findMany({
+          where: { tenantId, instanceTokenEnc: { not: null }, instanceName: { not: null } },
+          orderBy: { createdAt: 'asc' },
+          select: { instanceTokenEnc: true },
+        });
+        const instances = await prisma.instance.findMany({
+          where: { tenantId, provider: 'UAZAPI' },
+          orderBy: [{ active: 'desc' }, { priority: 'asc' }],
+          select: { instanceTokenEnc: true },
+        });
+        const tokens = [
+          ...users.map((u) => u.instanceTokenEnc as string),
+          ...instances.map((i) => i.instanceTokenEnc),
+        ];
+        let excluded = false;
+        for (const tokenEnc of tokens) {
+          try {
+            const info = await zappfy.getGroupInfo(decryptToken(tokenEnc), config.excludeGroupRemoteId, {
               timeoutMs: 15_000,
             });
             const members = new Set(
@@ -127,10 +143,15 @@ export function createFlowWorkers(deps: { connection: IORedis; prisma: PrismaCli
             for (let i = candidates.length - 1; i >= 0; i--) {
               if (members.has(candidates[i].phone)) candidates.splice(i, 1);
             }
+            excluded = true;
+            break;
+          } catch {
+            // tenta a próxima conexão
           }
-        } catch (err) {
-          // Falha na consulta do grupo NUNCA bloqueia o fluxo — só não exclui
-          log(`flow ${flow.slug}: getGroupInfo falhou (${(err as Error).message}), seguindo sem exclusão`);
+        }
+        if (!excluded) {
+          // Falha total NUNCA bloqueia o fluxo — o dedupe once-ever segura reenvio
+          log(`flow ${flow.slug}: nenhuma conexão leu o grupo ${config.excludeGroupRemoteId}, seguindo sem exclusão`);
         }
       }
       if (candidates.length === 0) return;
