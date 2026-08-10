@@ -4,7 +4,9 @@ import IORedis from 'ioredis';
 import {
   CampaignDispatchJobData,
   ContactSyncJobData,
+  FlowRunJobData,
   QUEUE_CAMPAIGN_DISPATCH,
+  QUEUE_FLOW_RUN,
   QUEUE_SEND_MESSAGE,
   QUEUE_SEND_MESSAGE_FINALIZE,
   QUEUE_SEND_MESSAGE_SINGLE,
@@ -23,6 +25,7 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
   public updateQueue!: Queue<UpdateGroupJobData>;
   public syncContactsQueue!: Queue<ContactSyncJobData>;
   public campaignDispatchQueue!: Queue<CampaignDispatchJobData>;
+  public flowRunQueue!: Queue<FlowRunJobData>;
   public flowProducer!: FlowProducer;
 
   onModuleInit() {
@@ -40,6 +43,7 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
     this.campaignDispatchQueue = new Queue<CampaignDispatchJobData>(QUEUE_CAMPAIGN_DISPATCH, {
       connection: this.connection,
     });
+    this.flowRunQueue = new Queue<FlowRunJobData>(QUEUE_FLOW_RUN, { connection: this.connection });
     this.flowProducer = new FlowProducer({ connection: this.connection });
   }
 
@@ -50,6 +54,7 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
     await this.updateQueue?.close();
     await this.syncContactsQueue?.close();
     await this.campaignDispatchQueue?.close();
+    await this.flowRunQueue?.close();
     await this.flowProducer?.close();
     await this.connection?.quit();
   }
@@ -76,6 +81,30 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
       const job = await this.campaignDispatchQueue.getJob(jobId);
       await job?.remove().catch(() => undefined);
     }
+  }
+
+  /** Acorda o dispatcher de uma campanha agora (após enqueue de destinatários). */
+  async kickCampaignDispatch(campaignId: string, tenantId: string): Promise<void> {
+    const jobId = `camp-cont-${campaignId}`;
+    const existing = await this.campaignDispatchQueue.getJob(jobId);
+    if (existing) {
+      const state = await existing.getState().catch(() => null);
+      if (state === 'delayed' || state === 'waiting') await existing.remove().catch(() => undefined);
+    }
+    await this.campaignDispatchQueue.add(
+      jobId,
+      { campaignId, tenantId },
+      { jobId, removeOnComplete: { count: 100 }, removeOnFail: { count: 100 } },
+    );
+  }
+
+  /** Enfileira uma rodada de fluxo. */
+  async enqueueFlowRun(flowId: string, tenantId: string): Promise<void> {
+    await this.flowRunQueue.add(
+      `run-${flowId}`,
+      { flowId, tenantId },
+      { removeOnComplete: { count: 50 }, removeOnFail: { count: 50 } },
+    );
   }
 
   /** Dispara um sync de contatos imediato do tenant (o repeatable continua valendo). */

@@ -29,6 +29,9 @@ model Tenant {
   // Fonte externa de contatos (por tenant): connection string Postgres cifrada
   // (AES-256-GCM, mesmo crypto.util das instâncias). Null = sync desativado.
   contactSourceDbUrlEnc   String?
+  // Banco do inbox (Chat BullQ) pra registrar cada envio na conversa do lead
+  // via register_template_message(). Null = registro desativado.
+  chatRegisterDbUrlEnc    String?
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
 
@@ -48,6 +51,7 @@ model Tenant {
   wabaTemplates        WabaTemplate[]
   campaigns            Campaign[]
   campaignMessages     CampaignMessage[]
+  flows                Flow[]
 }
 
 enum Role {
@@ -466,6 +470,7 @@ model Instance {
 
   tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   campaignMessages CampaignMessage[]
+  flows            Flow[]
 
   @@unique([tenantId, instanceName])
   @@index([tenantId, active, priority])
@@ -503,6 +508,38 @@ enum CampaignStatus {
   CANCELED
 }
 
+enum CampaignMode {
+  ONESHOT // audiência fixa, completa quando esvazia
+  CONTINUOUS // fica aberta recebendo destinatários (fluxos); nunca auto-completa
+}
+
+// Fluxo nativo (substitui os workflows n8n da esteira): gatilho agendado ou
+// webhook + template + NÚMERO FIXO + dedupe via campanha + registro no inbox.
+model Flow {
+  id           String    @id @default(cuid())
+  tenantId     String
+  name         String
+  slug         String
+  active       Boolean   @default(true)
+  // Número fixo do fluxo (decisão D2: um número por propósito)
+  instanceId   String
+  // Gatilhos: poller (a cada N min) OU horários fixos "HH:MM" no TZ do tenant
+  everyMinutes Int?
+  times        String[]  @default([])
+  // Mecânica do fluxo (audienceQuery, templates, segments, batchSize...) — ver flow-config.ts
+  config       Json
+  lastRunAt    DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  instance  Instance   @relation(fields: [instanceId], references: [id])
+  campaigns Campaign[]
+
+  @@unique([tenantId, slug])
+  @@index([tenantId, active])
+}
+
 enum CampaignAudience {
   LEAD
   BUYER
@@ -525,7 +562,10 @@ model Campaign {
   id                String           @id @default(cuid())
   tenantId          String
   name              String
-  templateId        String
+  mode              CampaignMode     @default(ONESHOT)
+  // Campanhas de fluxo definem template POR MENSAGEM (CampaignMessage.templateName)
+  flowId            String?
+  templateId        String?
   // Parâmetros posicionais do body do template ({{1}}, {{2}}...). Cada item é
   // literal OU token "{{contact.name}}" | "{{contact.email}}" | "{{contact.phone}}"
   templateVariables Json             @default("[]")
@@ -547,11 +587,13 @@ model Campaign {
   updatedAt         DateTime         @updatedAt
 
   tenant   Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  template WabaTemplate      @relation(fields: [templateId], references: [id])
+  template WabaTemplate?     @relation(fields: [templateId], references: [id])
+  flow     Flow?             @relation(fields: [flowId], references: [id], onDelete: SetNull)
   messages CampaignMessage[]
 
   @@index([tenantId, status])
   @@index([tenantId, createdAt])
+  @@index([flowId, createdAt])
 }
 
 // Log por destinatário — alimenta o dashboard (contagem por número, funil de
@@ -569,6 +611,10 @@ model CampaignMessage {
   // wamid — chave de lookup do webhook de status
   providerMessageId String?               @unique
   status            CampaignMessageStatus @default(PENDING)
+  // Override por mensagem (fluxos): template + params resolvidos no enqueue.
+  // flowContext = {params: string[], chatBody?: string, chatSource?: string, language?: string}
+  templateName      String?
+  flowContext       Json?
   errorCode         String?
   errorMessage      String?
   queuedAt          DateTime?

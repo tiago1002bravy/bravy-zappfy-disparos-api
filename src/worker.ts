@@ -23,6 +23,7 @@ import { notifyFailure } from './queue/webhook-notify.util';
 import { getOrderedPool, recordInstanceFailure, recordInstanceSuccess } from './common/instance-pool.util';
 import { createContactSyncWorker, registerContactSyncRepeatables } from './workers/contact-sync.worker';
 import { createCampaignWorkers } from './workers/campaign.worker';
+import { createFlowWorkers, registerFlowScheduler } from './workers/flow.worker';
 import { CloudApiClient } from './modules/meta/cloud-api.client';
 
 const log = (msg: string, extra?: unknown) =>
@@ -550,6 +551,12 @@ registerContactSyncRepeatables(connection).catch((err) =>
 // Campanhas 1:1 via Cloud API oficial
 const campaignWorkers = createCampaignWorkers({ connection, prisma, cloudApi: new CloudApiClient() });
 
+// Fluxos nativos (substituem a esteira n8n): agendador + runner
+const flowWorkers = createFlowWorkers({ connection, prisma });
+registerFlowScheduler(connection).catch((err) =>
+  log(`failed to register flow scheduler: ${(err as Error).message}`),
+);
+
 log('worker started, waiting for jobs');
 
 const shutdown = async () => {
@@ -560,6 +567,7 @@ const shutdown = async () => {
   await updateWorker.close();
   await contactSyncWorker.close();
   for (const w of campaignWorkers) await w.close();
+  for (const w of flowWorkers) await w.close();
   await flowProducer.close();
   await connection.quit();
   await prisma.$disconnect();

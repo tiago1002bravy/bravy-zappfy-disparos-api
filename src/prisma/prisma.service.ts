@@ -18,6 +18,7 @@ const TENANT_MODELS = new Set([
   'WabaTemplate',
   'Campaign',
   'CampaignMessage',
+  'Flow',
 ]);
 
 @Injectable()

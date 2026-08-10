@@ -119,7 +119,7 @@ export class CampaignsService {
         });
     return {
       ...campaign,
-      template: deriveTemplateView(campaign.template),
+      template: campaign.template ? deriveTemplateView(campaign.template) : null,
       messageStats: counts.get(id) ?? emptyCounts(),
       instances,
     };

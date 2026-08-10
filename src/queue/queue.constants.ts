@@ -36,6 +36,12 @@ export interface ContactSyncJobData {
 
 export const QUEUE_CAMPAIGN_DISPATCH = 'campaign-dispatch';
 export const QUEUE_CAMPAIGN_SEND = 'campaign-send-single';
+export const QUEUE_FLOW_RUN = 'flow-run';
+
+export interface FlowRunJobData {
+  flowId: string;
+  tenantId: string;
+}
 
 export interface CampaignDispatchJobData {
   campaignId: string;

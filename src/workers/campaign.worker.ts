@@ -10,6 +10,7 @@ import {
 import { decryptToken } from '../common/crypto.util';
 import { CloudApiClient, CloudApiError, CloudApiTemplateComponent } from '../modules/meta/cloud-api.client';
 import { notifyFailure } from '../queue/webhook-notify.util';
+import { registerInChatInbox } from '../common/chat-register.util';
 
 const log = (msg: string) => console.log(`[worker:campaign] ${msg}`);
 
@@ -138,8 +139,9 @@ export function createCampaignWorkers(deps: {
         return;
       }
 
-      // 1ª execução: snapshot da audiência
-      if (campaign.status === 'SCHEDULED') {
+      // 1ª execução: snapshot da audiência (só campanhas ONESHOT criadas via API;
+      // campanhas de fluxo/CONTINUOUS recebem destinatários por enqueue)
+      if (campaign.status === 'SCHEDULED' && campaign.mode === 'ONESHOT' && !campaign.flowId) {
         const total = await snapshotAudience(campaign);
         await prisma.campaign.update({
           where: { id: campaignId },
@@ -187,6 +189,8 @@ export function createCampaignWorkers(deps: {
       });
 
       if (pending.length === 0) {
+        // CONTINUOUS nunca completa — fica RUNNING aguardando o fluxo enfileirar mais
+        if (campaign.mode === 'CONTINUOUS') return;
         const inFlight = await prisma.campaignMessage.count({
           where: { campaignId, status: 'QUEUED' },
         });
@@ -327,43 +331,93 @@ export function createCampaignWorkers(deps: {
         return;
       }
 
-      // Resolve variáveis posicionais ({{contact.name}} etc.)
-      const contact = message.contactId
-        ? await prisma.contact.findUnique({ where: { id: message.contactId } })
-        : null;
-      const vars = (Array.isArray(campaign.templateVariables) ? campaign.templateVariables : []) as string[];
-      const bodyParams = vars.map((v) =>
-        v
-          .replace(/\{\{\s*contact\.name\s*\}\}/g, contact?.name ?? '')
-          .replace(/\{\{\s*contact\.email\s*\}\}/g, contact?.email ?? '')
-          .replace(/\{\{\s*contact\.phone\s*\}\}/g, message.phone),
-      );
+      // Template + params: override por mensagem (fluxos) OU template da campanha
+      const flowContext = (message.flowContext ?? null) as {
+        params?: string[];
+        chatBody?: string;
+        chatSource?: string;
+        language?: string;
+      } | null;
 
-      const components = (Array.isArray(campaign.template.components)
-        ? campaign.template.components
-        : []) as unknown as CloudApiTemplateComponent[];
-      const header = components.find((c) => c.type?.toUpperCase() === 'HEADER');
-      const headerFormat = header?.format?.toLowerCase();
-      const headerMediaType =
-        headerFormat === 'image' || headerFormat === 'video' || headerFormat === 'document'
-          ? headerFormat
-          : undefined;
+      let templateName: string;
+      let templateLanguage: string;
+      let bodyParams: string[];
+      let headerMediaType: 'image' | 'video' | 'document' | undefined;
+
+      if (message.templateName) {
+        templateName = message.templateName;
+        templateLanguage = flowContext?.language ?? 'pt_BR';
+        bodyParams = flowContext?.params ?? [];
+      } else {
+        if (!campaign.template) {
+          await prisma.campaignMessage.update({
+            where: { id: message.id },
+            data: { status: 'FAILED', failedAt: new Date(), errorMessage: 'campanha sem template' },
+          });
+          return;
+        }
+        const contact = message.contactId
+          ? await prisma.contact.findUnique({ where: { id: message.contactId } })
+          : null;
+        const vars = (Array.isArray(campaign.templateVariables) ? campaign.templateVariables : []) as string[];
+        bodyParams = vars.map((v) =>
+          v
+            .replace(/\{\{\s*contact\.name\s*\}\}/g, contact?.name ?? '')
+            .replace(/\{\{\s*contact\.email\s*\}\}/g, contact?.email ?? '')
+            .replace(/\{\{\s*contact\.phone\s*\}\}/g, message.phone),
+        );
+        templateName = campaign.template.name;
+        templateLanguage = campaign.template.language;
+        const components = (Array.isArray(campaign.template.components)
+          ? campaign.template.components
+          : []) as unknown as CloudApiTemplateComponent[];
+        const header = components.find((c) => c.type?.toUpperCase() === 'HEADER');
+        const headerFormat = header?.format?.toLowerCase();
+        headerMediaType =
+          headerFormat === 'image' || headerFormat === 'video' || headerFormat === 'document'
+            ? headerFormat
+            : undefined;
+      }
 
       const token = decryptToken(message.instance.instanceTokenEnc);
       try {
         const result = await cloudApi.sendTemplate(token, {
           phoneNumberId: message.instance.phoneNumberId,
           to: message.phone,
-          templateName: campaign.template.name,
-          language: campaign.template.language,
+          templateName,
+          language: templateLanguage,
           bodyParams,
-          headerMediaUrl: campaign.headerMediaUrl ?? undefined,
-          headerMediaType: campaign.headerMediaUrl ? headerMediaType : undefined,
+          headerMediaUrl: message.templateName ? undefined : (campaign.headerMediaUrl ?? undefined),
+          headerMediaType: !message.templateName && campaign.headerMediaUrl ? headerMediaType : undefined,
         });
         await prisma.campaignMessage.update({
           where: { id: message.id },
           data: { status: 'SENT', sentAt: new Date(), providerMessageId: result.messageId },
         });
+
+        // Registro no inbox (Chat BullQ) — best-effort, nunca afeta o envio
+        if (flowContext?.chatSource) {
+          try {
+            const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } });
+            if (tenant?.chatRegisterDbUrlEnc) {
+              const contact = message.contactId
+                ? await prisma.contact.findUnique({ where: { id: message.contactId } })
+                : null;
+              await registerInChatInbox({
+                dbUrl: decryptToken(tenant.chatRegisterDbUrlEnc),
+                phoneNumberId: message.instance.phoneNumberId,
+                toPhone: message.phone,
+                toName: contact?.name ?? null,
+                templateName,
+                bodyRendered: flowContext.chatBody ?? `[template] ${templateName}`,
+                wamid: result.messageId,
+                source: flowContext.chatSource,
+              });
+            }
+          } catch (regErr) {
+            log(`chat-register falhou p/ ${message.phone}: ${(regErr as Error).message}`);
+          }
+        }
       } catch (err) {
         const cloudErr = err instanceof CloudApiError ? err : null;
         const isLastAttempt = (job.attemptsMade ?? 0) + 1 >= (job.opts.attempts ?? 1);

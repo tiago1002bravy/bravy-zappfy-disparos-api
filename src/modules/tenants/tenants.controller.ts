@@ -129,6 +129,21 @@ export class TenantsController {
     return { hasContactSource: true, connectionOk, connectionError };
   }
 
+  /**
+   * Configura o banco do inbox (Chat BullQ) pro registro pós-envio dos fluxos
+   * (register_template_message). dbUrl null desativa.
+   */
+  @Put('chat-register')
+  async setChatRegister(@CurrentUser() u: AuthUser, @Body() dto: SetContactSourceDto) {
+    await this.prisma.withoutTenant((db) =>
+      db.tenant.update({
+        where: { id: u.tenantId },
+        data: { chatRegisterDbUrlEnc: dto.dbUrl ? encryptToken(dto.dbUrl) : null },
+      }),
+    );
+    return { hasChatRegister: Boolean(dto.dbUrl) };
+  }
+
   /** Sinaliza pra UI os defaults disponíveis (apenas participantes — instância é por usuário). */
   @Get('defaults')
   async defaults(@CurrentUser() u: AuthUser) {
