@@ -2,9 +2,13 @@ import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { FlowProducer, Queue } from 'bullmq';
 import IORedis from 'ioredis';
 import {
+  CampaignDispatchJobData,
+  ContactSyncJobData,
+  QUEUE_CAMPAIGN_DISPATCH,
   QUEUE_SEND_MESSAGE,
   QUEUE_SEND_MESSAGE_FINALIZE,
   QUEUE_SEND_MESSAGE_SINGLE,
+  QUEUE_SYNC_CONTACTS,
   QUEUE_UPDATE_GROUP,
   SendMessageJobData,
   UpdateGroupJobData,
@@ -17,6 +21,8 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
   public sendSingleQueue!: Queue;
   public sendFinalizeQueue!: Queue;
   public updateQueue!: Queue<UpdateGroupJobData>;
+  public syncContactsQueue!: Queue<ContactSyncJobData>;
+  public campaignDispatchQueue!: Queue<CampaignDispatchJobData>;
   public flowProducer!: FlowProducer;
 
   onModuleInit() {
@@ -30,6 +36,10 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
     this.sendSingleQueue = new Queue(QUEUE_SEND_MESSAGE_SINGLE, { connection: this.connection });
     this.sendFinalizeQueue = new Queue(QUEUE_SEND_MESSAGE_FINALIZE, { connection: this.connection });
     this.updateQueue = new Queue<UpdateGroupJobData>(QUEUE_UPDATE_GROUP, { connection: this.connection });
+    this.syncContactsQueue = new Queue<ContactSyncJobData>(QUEUE_SYNC_CONTACTS, { connection: this.connection });
+    this.campaignDispatchQueue = new Queue<CampaignDispatchJobData>(QUEUE_CAMPAIGN_DISPATCH, {
+      connection: this.connection,
+    });
     this.flowProducer = new FlowProducer({ connection: this.connection });
   }
 
@@ -38,8 +48,43 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
     await this.sendSingleQueue?.close();
     await this.sendFinalizeQueue?.close();
     await this.updateQueue?.close();
+    await this.syncContactsQueue?.close();
+    await this.campaignDispatchQueue?.close();
     await this.flowProducer?.close();
     await this.connection?.quit();
+  }
+
+  /** Agenda a 1ª execução do dispatch da campanha (delay até startAt). */
+  async scheduleCampaignDispatch(args: {
+    campaignId: string;
+    tenantId: string;
+    startAt: Date;
+  }): Promise<string> {
+    const delay = Math.max(0, args.startAt.getTime() - Date.now());
+    const jobId = `camp-${args.campaignId}`;
+    await this.campaignDispatchQueue.add(
+      jobId,
+      { campaignId: args.campaignId, tenantId: args.tenantId },
+      { delay, jobId, removeOnComplete: { count: 100 }, removeOnFail: { count: 100 } },
+    );
+    return jobId;
+  }
+
+  /** Remove os jobs de dispatch (inicial + continuação) de uma campanha. */
+  async cancelCampaignDispatch(campaignId: string): Promise<void> {
+    for (const jobId of [`camp-${campaignId}`, `camp-cont-${campaignId}`]) {
+      const job = await this.campaignDispatchQueue.getJob(jobId);
+      await job?.remove().catch(() => undefined);
+    }
+  }
+
+  /** Dispara um sync de contatos imediato (o repeatable continua valendo). */
+  async enqueueContactSync(full: boolean): Promise<void> {
+    await this.syncContactsQueue.add(
+      full ? 'manual-full' : 'manual-incremental',
+      { full },
+      { removeOnComplete: { count: 20 }, removeOnFail: { count: 20 } },
+    );
   }
 
   /**

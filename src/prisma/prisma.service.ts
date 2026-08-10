@@ -14,6 +14,10 @@ const TENANT_MODELS = new Set([
   'GroupUpdateSchedule',
   'Execution',
   'Instance',
+  'Contact',
+  'WabaTemplate',
+  'Campaign',
+  'CampaignMessage',
 ]);
 
 @Injectable()

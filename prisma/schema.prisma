@@ -40,6 +40,11 @@ model Tenant {
   executions           Execution[]
   apiKeys              ApiKey[]
   instances            Instance[]
+  contacts             Contact[]
+  contactSyncState     ContactSyncState?
+  wabaTemplates        WabaTemplate[]
+  campaigns            Campaign[]
+  campaignMessages     CampaignMessage[]
 }
 
 enum Role {
@@ -428,23 +433,208 @@ model GroupUpdateSchedule {
   @@index([tenantId])
 }
 
+enum InstanceProvider {
+  UAZAPI // API não-oficial (grupos) — comportamento legado
+  CLOUD_API // WhatsApp Cloud API oficial (Meta) — envio 1:1 via template
+}
+
 model Instance {
   id               String    @id @default(cuid())
   tenantId         String
   label            String
+  // CLOUD_API: instanceName = phoneNumberId (convenção pra manter o unique
+  // não-nulo sem migration disruptiva). instanceTokenEnc = access token Meta
+  // (System User, permanente) cifrado com o mesmo crypto.util.
   instanceName     String
   instanceTokenEnc String
   priority         Int       @default(0)
   active           Boolean   @default(true)
   lastFailedAt     DateTime?
   failureCount     Int       @default(0)
+  provider           InstanceProvider @default(UAZAPI)
+  phoneNumberId      String?
+  wabaId             String?
+  displayPhoneNumber String?
+  // Limite de envios 1:1 por janela móvel de 24h; null = CLOUD_API_DEFAULT_DAILY_CAP.
+  // Tiers da Meta: 250/1k/10k/100k por 24h — responsabilidade do operador.
+  dailyCap           Int?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  campaignMessages CampaignMessage[]
 
   @@unique([tenantId, instanceName])
   @@index([tenantId, active, priority])
+  @@index([tenantId, provider, active])
+}
+
+// Espelho local dos templates aprovados da WABA (sync-only — criação/aprovação
+// acontece no Business Manager da Meta). status como String: a Meta muda o set.
+model WabaTemplate {
+  id         String   @id @default(cuid())
+  tenantId   String
+  wabaId     String
+  externalId String?
+  name       String
+  language   String // ex: pt_BR
+  category   String // MARKETING | UTILITY | AUTHENTICATION
+  status     String // APPROVED | PENDING | REJECTED | PAUSED | DISABLED...
+  components Json // resposta crua de GET /{waba_id}/message_templates
+  syncedAt   DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  campaigns Campaign[]
+
+  @@unique([tenantId, wabaId, name, language])
+  @@index([tenantId, status])
+}
+
+enum CampaignStatus {
+  SCHEDULED
+  RUNNING
+  PAUSED
+  COMPLETED
+  CANCELED
+}
+
+enum CampaignAudience {
+  LEAD
+  BUYER
+  ALL
+}
+
+enum CampaignMessageStatus {
+  PENDING // snapshot criado, aguardando budget/onda
+  QUEUED // atribuído a uma instância, job single enfileirado
+  SENT // aceito pela Cloud API (tem providerMessageId)
+  DELIVERED
+  READ
+  FAILED
+  SKIPPED // campanha cancelada / contato inválido
+}
+
+// Campanha de disparo 1:1 via Cloud API oficial. Distribuição round-robin
+// entre as instâncias CLOUD_API respeitando dailyCap (janela móvel 24h).
+model Campaign {
+  id                String           @id @default(cuid())
+  tenantId          String
+  name              String
+  templateId        String
+  // Parâmetros posicionais do body do template ({{1}}, {{2}}...). Cada item é
+  // literal OU token "{{contact.name}}" | "{{contact.email}}" | "{{contact.phone}}"
+  templateVariables Json             @default("[]")
+  // URL pública pra header IMAGE/VIDEO/DOCUMENT (link-based)
+  headerMediaUrl    String?
+  audienceKind      CampaignAudience
+  // Seleção manual opcional de contatos; vazio = audiência inteira do kind
+  contactIds        String[]         @default([])
+  // Instâncias CLOUD_API a usar; vazio = todas ativas do tenant
+  instanceIds       String[]         @default([])
+  throttlePerMinute Int              @default(60)
+  startAt           DateTime
+  status            CampaignStatus   @default(SCHEDULED)
+  totalTargets      Int              @default(0)
+  bullJobId         String?
+  startedAt         DateTime?
+  completedAt       DateTime?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  tenant   Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  template WabaTemplate      @relation(fields: [templateId], references: [id])
+  messages CampaignMessage[]
+
+  @@index([tenantId, status])
+  @@index([tenantId, createdAt])
+}
+
+// Log por destinatário — alimenta o dashboard (contagem por número, funil de
+// entrega, % enviado). Status atualizado pelo webhook da Meta via providerMessageId.
+model CampaignMessage {
+  id                String                @id @default(cuid())
+  tenantId          String
+  campaignId        String
+  contactId         String?
+  phone             String
+  // Snapshot do kind no momento do disparo (lead pode virar buyer depois)
+  contactKind       ContactKind
+  instanceId        String?
+  phoneNumberId     String?
+  // wamid — chave de lookup do webhook de status
+  providerMessageId String?               @unique
+  status            CampaignMessageStatus @default(PENDING)
+  errorCode         String?
+  errorMessage      String?
+  queuedAt          DateTime?
+  sentAt            DateTime?
+  deliveredAt       DateTime?
+  readAt            DateTime?
+  failedAt          DateTime?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  campaign Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contact  Contact?  @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  instance Instance? @relation(fields: [instanceId], references: [id], onDelete: SetNull)
+
+  @@unique([campaignId, phone])
+  @@index([tenantId, campaignId, status])
+  @@index([tenantId, instanceId, sentAt])
+  @@index([tenantId, contactKind, status])
+  @@index([tenantId, sentAt])
+  @@index([campaignId, status])
+}
+
+enum ContactKind {
+  LEAD
+  BUYER
+}
+
+// Contatos 1:1 sincronizados de fonte externa (hotwebinar) ou cadastrados via API.
+// comprador = comprou_at IS NOT NULL na origem.
+model Contact {
+  id          String      @id @default(cuid())
+  tenantId    String
+  // Dígitos E.164 sem "+", canônico BR COM 9º dígito (convenção do repo)
+  phone       String
+  kind        ContactKind
+  name        String?
+  email       String?
+  source      String      @default("hotwebinar")
+  // Telefone cru na origem (PK do hotwebinar), sem normalizar — preserva o link
+  externalRef String?
+  boughtAt    DateTime?
+  firstSeenAt DateTime?
+  lastSeenAt  DateTime?
+  syncedAt    DateTime
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  tenant   Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  messages CampaignMessage[]
+
+  @@unique([tenantId, phone])
+  @@index([tenantId, kind])
+  @@index([tenantId, lastSeenAt])
+}
+
+// Estado do sync incremental com o hotwebinar (1 por tenant, operado só pelo worker)
+model ContactSyncState {
+  id             String    @id @default(cuid())
+  tenantId       String    @unique
+  // Watermark: max last_seen processado no incremental
+  lastSeenCursor DateTime?
+  lastFullSyncAt DateTime?
+  lastRunAt      DateTime?
+  lastRunStatus  String? // SUCCESS | FAILED
+  lastRunError   String?
+  lastRunUpserts Int       @default(0)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
 
 enum ExecStatus {
@@ -472,4 +662,6 @@ model Execution {
   @@index([tenantId, ranAt])
   @@index([scheduleId])
   @@index([groupUpdateScheduleId])
+  @@index([tenantId, instanceName, ranAt])
+  @@index([tenantId, status, ranAt])
 }

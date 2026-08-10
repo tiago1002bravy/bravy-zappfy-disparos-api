@@ -19,8 +19,13 @@ import { ExecutionsModule } from './modules/executions/executions.module';
 import { CalendarModule } from './modules/calendar/calendar.module';
 import { CronModule } from './modules/cron/cron.module';
 import { ZappfyModule } from './modules/zappfy/zappfy.module';
+import { MetaModule } from './modules/meta/meta.module';
 import { HealthModule } from './modules/health/health.module';
 import { InstancesModule } from './modules/instances/instances.module';
+import { StatsModule } from './modules/stats/stats.module';
+import { ContactsModule } from './modules/contacts/contacts.module';
+import { WabaTemplatesModule } from './modules/waba-templates/waba-templates.module';
+import { CampaignsModule } from './modules/campaigns/campaigns.module';
 import { QueueModule } from './queue/queue.module';
 import { TimeoutInterceptor } from './common/interceptors/timeout.interceptor';
 import { RequestLoggerMiddleware } from './common/middleware/request-logger.middleware';
@@ -34,6 +39,7 @@ import { RequestLoggerMiddleware } from './common/middleware/request-logger.midd
     ]),
     PrismaModule,
     ZappfyModule,
+    MetaModule,
     QueueModule,
     AuthModule,
     ApiKeysModule,
@@ -52,6 +58,10 @@ import { RequestLoggerMiddleware } from './common/middleware/request-logger.midd
     CronModule,
     HealthModule,
     InstancesModule,
+    StatsModule,
+    ContactsModule,
+    WabaTemplatesModule,
+    CampaignsModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

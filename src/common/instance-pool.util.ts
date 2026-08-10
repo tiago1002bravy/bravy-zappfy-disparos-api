@@ -45,7 +45,9 @@ export async function getOrderedPool(
   primaryInstanceName?: string,
 ): Promise<PooledInstance[]> {
   const instances = await prisma.instance.findMany({
-    where: { tenantId, active: true },
+    // Pool de grupos é só Uazapi — instâncias CLOUD_API (envio 1:1 oficial)
+    // não falam o protocolo de grupos e nunca entram no failover daqui.
+    where: { tenantId, active: true, provider: 'UAZAPI' },
     orderBy: [{ priority: 'asc' }, { failureCount: 'asc' }],
     select: { id: true, instanceName: true, instanceTokenEnc: true },
   });

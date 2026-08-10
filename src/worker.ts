@@ -21,6 +21,9 @@ import { decryptToken } from './common/crypto.util';
 import { ZappfyClient } from './modules/zappfy/zappfy.client';
 import { notifyFailure } from './queue/webhook-notify.util';
 import { getOrderedPool, recordInstanceFailure, recordInstanceSuccess } from './common/instance-pool.util';
+import { createContactSyncWorker, registerContactSyncRepeatables } from './workers/contact-sync.worker';
+import { createCampaignWorkers } from './workers/campaign.worker';
+import { CloudApiClient } from './modules/meta/cloud-api.client';
 
 const log = (msg: string, extra?: unknown) =>
   console.log(`[worker] ${msg}`, extra ?? '');
@@ -380,7 +383,7 @@ const sendSingleWorker = new Worker<SendMessageSingleJobData>(
       const token = decryptToken(sched.instanceTokenEnc);
       await sendMessageToGroup(token, groupRemoteId, message);
       await prisma.execution.create({
-        data: { tenantId, scheduleId, status: 'SUCCESS', groupRemoteId },
+        data: { tenantId, scheduleId, status: 'SUCCESS', groupRemoteId, instanceName: sched.instanceName },
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -388,7 +391,7 @@ const sendSingleWorker = new Worker<SendMessageSingleJobData>(
       const isLastAttempt = (job.attemptsMade ?? 0) + 1 >= (job.opts.attempts ?? 1);
       if (isLastAttempt) {
         await prisma.execution.create({
-          data: { tenantId, scheduleId, status: 'FAILED', groupRemoteId, errorMessage: msg },
+          data: { tenantId, scheduleId, status: 'FAILED', groupRemoteId, errorMessage: msg, instanceName: sched.instanceName },
         });
         if (failureWebhookUrl) {
           await notifyFailure(failureWebhookUrl, {
@@ -501,12 +504,12 @@ const updateWorker = new Worker<UpdateGroupJobData>(
       try {
         await applyGroupUpdate(token, sched, tenantId);
         await prisma.execution.create({
-          data: { tenantId, groupUpdateScheduleId, status: 'SUCCESS', groupRemoteId: sched.groupRemoteId },
+          data: { tenantId, groupUpdateScheduleId, status: 'SUCCESS', groupRemoteId: sched.groupRemoteId, instanceName: sched.instanceName },
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         await prisma.execution.create({
-          data: { tenantId, groupUpdateScheduleId, status: 'FAILED', groupRemoteId: sched.groupRemoteId, errorMessage: msg },
+          data: { tenantId, groupUpdateScheduleId, status: 'FAILED', groupRemoteId: sched.groupRemoteId, errorMessage: msg, instanceName: sched.instanceName },
         });
         if (tenant?.failureWebhookUrl) {
           await notifyFailure(tenant.failureWebhookUrl, {
@@ -537,6 +540,19 @@ sendFinalizeWorker.on('failed', (job, err) =>
 );
 updateWorker.on('failed', (job, err) => log(`update job failed ${job?.id}: ${err.message}`));
 
+// Sync de contatos (hotwebinar) — só quando a integração está configurada
+const contactSyncWorker = process.env.HOTWEBINAR_DATABASE_URL
+  ? createContactSyncWorker({ connection, prisma })
+  : null;
+if (contactSyncWorker) {
+  registerContactSyncRepeatables(connection).catch((err) =>
+    log(`failed to register contact-sync repeatables: ${(err as Error).message}`),
+  );
+}
+
+// Campanhas 1:1 via Cloud API oficial
+const campaignWorkers = createCampaignWorkers({ connection, prisma, cloudApi: new CloudApiClient() });
+
 log('worker started, waiting for jobs');
 
 const shutdown = async () => {
@@ -545,6 +561,8 @@ const shutdown = async () => {
   await sendSingleWorker.close();
   await sendFinalizeWorker.close();
   await updateWorker.close();
+  await contactSyncWorker?.close();
+  for (const w of campaignWorkers) await w.close();
   await flowProducer.close();
   await connection.quit();
   await prisma.$disconnect();

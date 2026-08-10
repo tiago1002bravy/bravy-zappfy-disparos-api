@@ -25,3 +25,23 @@ export interface UpdateGroupJobData {
   groupUpdateScheduleId: string;
   tenantId: string;
 }
+
+export const QUEUE_SYNC_CONTACTS = 'sync-contacts';
+
+export interface ContactSyncJobData {
+  full?: boolean;
+}
+
+export const QUEUE_CAMPAIGN_DISPATCH = 'campaign-dispatch';
+export const QUEUE_CAMPAIGN_SEND = 'campaign-send-single';
+
+export interface CampaignDispatchJobData {
+  campaignId: string;
+  tenantId: string;
+}
+
+export interface CampaignSendJobData {
+  campaignMessageId: string;
+  campaignId: string;
+  tenantId: string;
+}
