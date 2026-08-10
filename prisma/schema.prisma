@@ -26,6 +26,9 @@ model Tenant {
   defaultGroupPictureMediaId String?
   defaultGroupLocked      Boolean  @default(true)
   defaultGroupAnnounce    Boolean  @default(true)
+  // Fonte externa de contatos (por tenant): connection string Postgres cifrada
+  // (AES-256-GCM, mesmo crypto.util das instâncias). Null = sync desativado.
+  contactSourceDbUrlEnc   String?
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
 

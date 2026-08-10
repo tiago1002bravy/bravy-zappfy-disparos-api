@@ -17,8 +17,8 @@ export interface HotwebinarLeadRow {
 export class HotwebinarClient {
   private pool: Pool;
 
-  constructor(connectionString = process.env.HOTWEBINAR_DATABASE_URL) {
-    if (!connectionString) throw new Error('HOTWEBINAR_DATABASE_URL not set');
+  constructor(connectionString: string) {
+    if (!connectionString) throw new Error('connection string da fonte de contatos é obrigatória');
     this.pool = new Pool({ connectionString, max: 2, idleTimeoutMillis: 30_000 });
   }
 

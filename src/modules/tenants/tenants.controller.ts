@@ -1,16 +1,23 @@
-import { Body, Controller, Get, Patch, UseGuards, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Get, Patch, Put, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { IsArray, IsBoolean, IsOptional, IsString, IsUrl } from 'class-validator';
+import { IsArray, IsBoolean, IsOptional, IsString, IsUrl, Matches } from 'class-validator';
 import { JwtOrApiKeyGuard } from '../auth/guards/jwt-or-api-key.guard';
 import { TenantInterceptor } from '../../common/interceptors/tenant.interceptor';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CurrentUser, AuthUser } from '../../common/decorators/current-user.decorator';
+import { encryptToken } from '../../common/crypto.util';
+import { HotwebinarClient } from '../contacts/hotwebinar.client';
 
 class UpdateTenantDto {
   @IsOptional() @IsString() timezone?: string;
   @IsOptional() @IsUrl({ require_protocol: true }) failureWebhookUrl?: string | null;
   @IsOptional() @IsArray() @IsString({ each: true }) defaultParticipants?: string[];
   @IsOptional() @IsArray() @IsString({ each: true }) autoJoinPhones?: string[];
+}
+
+class SetContactSourceDto {
+  // null limpa a fonte (desativa o sync do tenant)
+  @IsOptional() @IsString() @Matches(/^postgres(ql)?:\/\//) dbUrl?: string | null;
 }
 
 class UpdateGroupDefaultsDto {
@@ -51,6 +58,7 @@ export class TenantsController {
       defaultGroupPictureMediaId: t.defaultGroupPictureMediaId,
       defaultGroupLocked: t.defaultGroupLocked,
       defaultGroupAnnounce: t.defaultGroupAnnounce,
+      hasContactSource: Boolean(t.contactSourceDbUrlEnc),
     };
   }
 
@@ -83,6 +91,42 @@ export class TenantsController {
       defaultParticipants: t.defaultParticipants,
       autoJoinPhones: t.autoJoinPhones,
     };
+  }
+
+  /**
+   * Configura a fonte externa de contatos do tenant (Postgres com tabela `leads`
+   * no formato hotwebinar). A URL é cifrada em repouso; dbUrl null desativa.
+   * Testa a conexão antes de salvar (não bloqueia: salva mesmo com falha e
+   * devolve o erro pra UI decidir).
+   */
+  @Put('contact-source')
+  async setContactSource(@CurrentUser() u: AuthUser, @Body() dto: SetContactSourceDto) {
+    if (!dto.dbUrl) {
+      await this.prisma.withoutTenant((db) =>
+        db.tenant.update({ where: { id: u.tenantId }, data: { contactSourceDbUrlEnc: null } }),
+      );
+      return { hasContactSource: false, connectionOk: null };
+    }
+
+    let connectionOk = false;
+    let connectionError: string | null = null;
+    const client = new HotwebinarClient(dto.dbUrl);
+    try {
+      await client.countLeads();
+      connectionOk = true;
+    } catch (err) {
+      connectionError = err instanceof Error ? err.message : String(err);
+    } finally {
+      await client.close().catch(() => undefined);
+    }
+
+    await this.prisma.withoutTenant((db) =>
+      db.tenant.update({
+        where: { id: u.tenantId },
+        data: { contactSourceDbUrlEnc: encryptToken(dto.dbUrl as string) },
+      }),
+    );
+    return { hasContactSource: true, connectionOk, connectionError };
   }
 
   /** Sinaliza pra UI os defaults disponíveis (apenas participantes — instância é por usuário). */

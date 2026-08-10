@@ -26,22 +26,19 @@ interface MergedLead {
 }
 
 /**
- * Sincroniza a tabela `leads` do hotwebinar pra `Contact` do tenant configurado
- * em HOTWEBINAR_TENANT_SLUG. Incremental por watermark de last_seen; full-sync
- * varre tudo (necessário pra promoção LEAD→BUYER, já que comprou_at pode ser
- * setado sem bump de last_seen).
+ * Sincroniza a tabela `leads` da fonte externa (formato hotwebinar) pra
+ * `Contact` de UM tenant. A connection string vem de
+ * `Tenant.contactSourceDbUrlEnc` (config POR TENANT — nada de env global).
+ * Incremental por watermark de last_seen; full-sync varre tudo (necessário pra
+ * promoção LEAD→BUYER, já que comprou_at pode ser setado sem bump de last_seen).
  *
  * Sem DI de propósito: chamável do worker standalone e da API.
  */
 export async function runContactSync(
   prisma: PrismaClient,
-  opts: { full?: boolean } = {},
+  opts: { tenantId: string; dbUrl: string; full?: boolean },
 ): Promise<ContactSyncResult> {
-  const slug = process.env.HOTWEBINAR_TENANT_SLUG;
-  if (!slug) throw new Error('HOTWEBINAR_TENANT_SLUG not set');
-  const tenant = await prisma.tenant.findUnique({ where: { slug } });
-  if (!tenant) throw new Error(`Tenant "${slug}" não encontrado`);
-  const tenantId = tenant.id;
+  const tenantId = opts.tenantId;
 
   const state = await prisma.contactSyncState.upsert({
     where: { tenantId },
@@ -55,7 +52,7 @@ export async function runContactSync(
       ? new Date(state.lastSeenCursor.getTime() - INCREMENTAL_OVERLAP_MS)
       : undefined;
 
-  const hotwebinar = new HotwebinarClient();
+  const hotwebinar = new HotwebinarClient(opts.dbUrl);
   const result: ContactSyncResult = { tenantId, full, scanned: 0, upserts: 0, skippedInvalidPhone: 0 };
   let maxLastSeen = state.lastSeenCursor ?? null;
 
@@ -144,6 +141,35 @@ export async function runContactSync(
   } finally {
     await hotwebinar.close().catch(() => undefined);
   }
+}
+
+/**
+ * Varre TODOS os tenants com fonte de contatos configurada (ou só um, quando
+ * `tenantId` vem no trigger manual) e roda o sync de cada um. Falha de um
+ * tenant não derruba os demais — fica registrada no ContactSyncState dele.
+ */
+export async function runContactSyncSweep(
+  prisma: PrismaClient,
+  opts: { full?: boolean; tenantId?: string } = {},
+): Promise<Array<ContactSyncResult | { tenantId: string; error: string }>> {
+  const { decryptToken } = await import('../../common/crypto.util');
+  const tenants = await prisma.tenant.findMany({
+    where: {
+      contactSourceDbUrlEnc: { not: null },
+      ...(opts.tenantId ? { id: opts.tenantId } : {}),
+    },
+    select: { id: true, slug: true, contactSourceDbUrlEnc: true },
+  });
+  const results: Array<ContactSyncResult | { tenantId: string; error: string }> = [];
+  for (const tenant of tenants) {
+    try {
+      const dbUrl = decryptToken(tenant.contactSourceDbUrlEnc as string);
+      results.push(await runContactSync(prisma, { tenantId: tenant.id, dbUrl, full: opts.full }));
+    } catch (err) {
+      results.push({ tenantId: tenant.id, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return results;
 }
 
 function toMerged(phone: string, row: HotwebinarLeadRow): MergedLead {

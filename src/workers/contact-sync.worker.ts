@@ -2,7 +2,7 @@ import { Queue, Worker } from 'bullmq';
 import type IORedis from 'ioredis';
 import { PrismaClient } from '@prisma/client';
 import { ContactSyncJobData, QUEUE_SYNC_CONTACTS } from '../queue/queue.constants';
-import { runContactSync } from '../modules/contacts/contact-sync';
+import { runContactSyncSweep } from '../modules/contacts/contact-sync';
 
 const log = (msg: string) => console.log(`[worker:contact-sync] ${msg}`);
 
@@ -14,12 +14,19 @@ export function createContactSyncWorker(deps: {
     QUEUE_SYNC_CONTACTS,
     async (job) => {
       const full = job.data.full ?? false;
-      log(`sync started (full=${full})`);
-      const result = await runContactSync(deps.prisma, { full });
-      log(
-        `sync done: scanned=${result.scanned} upserts=${result.upserts} skippedInvalidPhone=${result.skippedInvalidPhone}`,
-      );
-      return result;
+      log(`sync started (full=${full}${job.data.tenantId ? `, tenant=${job.data.tenantId}` : ', sweep'})`);
+      const results = await runContactSyncSweep(deps.prisma, {
+        full,
+        tenantId: job.data.tenantId,
+      });
+      for (const r of results) {
+        if ('error' in r) log(`tenant ${r.tenantId} FALHOU: ${r.error}`);
+        else
+          log(
+            `tenant ${r.tenantId}: scanned=${r.scanned} upserts=${r.upserts} skippedInvalidPhone=${r.skippedInvalidPhone}`,
+          );
+      }
+      return results;
     },
     // Concurrency 1: dois syncs simultâneos disputariam o watermark
     { connection: deps.connection, concurrency: 1, lockDuration: 10 * 60_000 },

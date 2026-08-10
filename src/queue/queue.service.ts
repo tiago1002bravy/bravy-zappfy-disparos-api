@@ -78,11 +78,11 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /** Dispara um sync de contatos imediato (o repeatable continua valendo). */
-  async enqueueContactSync(full: boolean): Promise<void> {
+  /** Dispara um sync de contatos imediato do tenant (o repeatable continua valendo). */
+  async enqueueContactSync(full: boolean, tenantId: string): Promise<void> {
     await this.syncContactsQueue.add(
       full ? 'manual-full' : 'manual-incremental',
-      { full },
+      { full, tenantId },
       { removeOnComplete: { count: 20 }, removeOnFail: { count: 20 } },
     );
   }

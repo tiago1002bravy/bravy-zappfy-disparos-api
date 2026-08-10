@@ -30,6 +30,8 @@ export const QUEUE_SYNC_CONTACTS = 'sync-contacts';
 
 export interface ContactSyncJobData {
   full?: boolean;
+  // Presente no trigger manual (sincroniza só o tenant); ausente no repeatable (varre todos)
+  tenantId?: string;
 }
 
 export const QUEUE_CAMPAIGN_DISPATCH = 'campaign-dispatch';

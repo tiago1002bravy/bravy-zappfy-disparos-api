@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { requireTenantId } from '../../common/tenant-context';
 import { QueueService } from '../../queue/queue.service';
@@ -68,7 +68,14 @@ export class ContactsService {
   }
 
   async triggerSync(full: boolean) {
-    await this.queue.enqueueContactSync(full);
+    const tenantId = requireTenantId();
+    const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } });
+    if (!tenant?.contactSourceDbUrlEnc) {
+      throw new BadRequestException(
+        'Fonte de contatos não configurada — defina em PUT /tenant/contact-source',
+      );
+    }
+    await this.queue.enqueueContactSync(full, tenantId);
     return { enqueued: true, full };
   }
 }

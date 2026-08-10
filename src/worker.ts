@@ -540,15 +540,12 @@ sendFinalizeWorker.on('failed', (job, err) =>
 );
 updateWorker.on('failed', (job, err) => log(`update job failed ${job?.id}: ${err.message}`));
 
-// Sync de contatos (hotwebinar) — só quando a integração está configurada
-const contactSyncWorker = process.env.HOTWEBINAR_DATABASE_URL
-  ? createContactSyncWorker({ connection, prisma })
-  : null;
-if (contactSyncWorker) {
-  registerContactSyncRepeatables(connection).catch((err) =>
-    log(`failed to register contact-sync repeatables: ${(err as Error).message}`),
-  );
-}
+// Sync de contatos — fonte configurada POR TENANT (Tenant.contactSourceDbUrlEnc);
+// o sweep é no-op barato quando nenhum tenant tem fonte configurada.
+const contactSyncWorker = createContactSyncWorker({ connection, prisma });
+registerContactSyncRepeatables(connection).catch((err) =>
+  log(`failed to register contact-sync repeatables: ${(err as Error).message}`),
+);
 
 // Campanhas 1:1 via Cloud API oficial
 const campaignWorkers = createCampaignWorkers({ connection, prisma, cloudApi: new CloudApiClient() });
@@ -561,7 +558,7 @@ const shutdown = async () => {
   await sendSingleWorker.close();
   await sendFinalizeWorker.close();
   await updateWorker.close();
-  await contactSyncWorker?.close();
+  await contactSyncWorker.close();
   for (const w of campaignWorkers) await w.close();
   await flowProducer.close();
   await connection.quit();
