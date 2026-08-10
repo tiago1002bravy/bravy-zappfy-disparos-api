@@ -403,13 +403,28 @@ export function createCampaignWorkers(deps: {
               const contact = message.contactId
                 ? await prisma.contact.findUnique({ where: { id: message.contactId } })
                 : null;
+              // Corpo real do template ({{n}} → params) pro histórico do vendedor
+              let bodyRendered = flowContext.chatBody ?? '';
+              if (!bodyRendered) {
+                const tpl = await prisma.wabaTemplate.findFirst({
+                  where: { tenantId, name: templateName, language: templateLanguage },
+                });
+                const components = (Array.isArray(tpl?.components) ? tpl!.components : []) as Array<{
+                  type?: string;
+                  text?: string;
+                }>;
+                const bodyText = components.find((c) => c.type?.toUpperCase() === 'BODY')?.text ?? '';
+                bodyRendered = bodyText
+                  ? bodyText.replace(/\{\{(\d+)\}\}/g, (_, n: string) => bodyParams[Number(n) - 1] ?? '')
+                  : `[template] ${templateName}`;
+              }
               await registerInChatInbox({
                 dbUrl: decryptToken(tenant.chatRegisterDbUrlEnc),
                 phoneNumberId: message.instance.phoneNumberId,
                 toPhone: message.phone,
                 toName: contact?.name ?? null,
                 templateName,
-                bodyRendered: flowContext.chatBody ?? `[template] ${templateName}`,
+                bodyRendered,
                 wamid: result.messageId,
                 source: flowContext.chatSource,
               });
