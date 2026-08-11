@@ -189,8 +189,12 @@ export function createCampaignWorkers(deps: {
       });
 
       if (pending.length === 0) {
-        // CONTINUOUS nunca completa — fica RUNNING aguardando o fluxo enfileirar mais
-        if (campaign.mode === 'CONTINUOUS') return;
+        // CONTINUOUS nunca completa — mantém um heartbeat pra varrer PENDING que
+        // chegue sem o wake do fluxo pegar (ex.: wake no-op com dispatcher ativo)
+        if (campaign.mode === 'CONTINUOUS') {
+          await enqueueContinuation(campaignId, tenantId, 5 * 60_000);
+          return;
+        }
         const inFlight = await prisma.campaignMessage.count({
           where: { campaignId, status: 'QUEUED' },
         });
@@ -285,11 +289,13 @@ export function createCampaignWorkers(deps: {
 
   async function enqueueContinuation(campaignId: string, tenantId: string, delay: number): Promise<void> {
     const jobId = `camp-cont-${campaignId}`;
-    // Remove continuação anterior (se ainda delayed) pra reagendar com o novo delay
+    // Remove o job anterior em qualquer estado não-ativo: delayed/waiting pra
+    // reagendar com o novo delay, completed/failed porque o jobId retido no set
+    // faria o add virar no-op (deadlock do wake em CONTINUOUS)
     const existing = await dispatchQueue.getJob(jobId);
     if (existing) {
       const state = await existing.getState().catch(() => null);
-      if (state === 'delayed' || state === 'waiting') await existing.remove().catch(() => undefined);
+      if (state !== 'active') await existing.remove().catch(() => undefined);
     }
     await dispatchQueue.add(
       jobId,

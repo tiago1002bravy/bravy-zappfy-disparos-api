@@ -89,7 +89,8 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
     const existing = await this.campaignDispatchQueue.getJob(jobId);
     if (existing) {
       const state = await existing.getState().catch(() => null);
-      if (state === 'delayed' || state === 'waiting') await existing.remove().catch(() => undefined);
+      // completed/failed também — jobId retido no set faria o add virar no-op
+      if (state !== 'active') await existing.remove().catch(() => undefined);
     }
     await this.campaignDispatchQueue.add(
       jobId,

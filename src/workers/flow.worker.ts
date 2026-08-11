@@ -309,7 +309,9 @@ export function createFlowWorkers(deps: { connection: IORedis; prisma: PrismaCli
       const existing = await dispatchQueue.getJob(jobId);
       if (existing) {
         const state = await existing.getState().catch(() => null);
-        if (state === 'delayed' || state === 'waiting') await existing.remove().catch(() => undefined);
+        // completed/failed também: o jobId fica no set e faria o add virar no-op,
+        // deixando PENDING preso até a próxima onda (deadlock em CONTINUOUS)
+        if (state !== 'active') await existing.remove().catch(() => undefined);
       }
       await dispatchQueue.add(
         jobId,
