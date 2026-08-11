@@ -22,6 +22,22 @@ interface DailyKindRow {
 
 const SENT_FAMILY = ['SENT', 'DELIVERED', 'READ'] as const;
 
+// Preço por mensagem de template no Brasil (USD, tabela Meta vigente desde jul/2025).
+// Estimativa: a Meta cobra por mensagem entregue e o billing real passa pelo BSP;
+// aqui contamos enviadas (operação send-only, sem recibo de delivered).
+const CLOUD_API_MSG_PRICE_USD: Record<string, number> = {
+  MARKETING: 0.0625,
+  UTILITY: 0.008,
+  AUTHENTICATION: 0.0315,
+};
+
+interface FlowAggRow {
+  flow_id: string | null;
+  template_name: string | null;
+  success: bigint | number;
+  failed: bigint | number;
+}
+
 /** Offset (ms) do timezone IANA em relação a UTC no instante dado. */
 function tzOffsetMs(tz: string, date: Date): number {
   const dtf = new Intl.DateTimeFormat('en-US', {
@@ -228,6 +244,85 @@ export class StatsService {
       },
       daily: series,
     };
+  }
+
+  async flows(range: StatsRange) {
+    const { tenantId, fromUtc, toUtc } = await this.resolveRange(range);
+
+    const [flows, rows, templates] = await Promise.all([
+      this.prisma.flow.findMany({
+        orderBy: { createdAt: 'asc' },
+        select: { id: true, name: true, slug: true, active: true, instanceId: true, config: true },
+      }),
+      this.prisma.$queryRaw<FlowAggRow[]>(Prisma.sql`
+        SELECT c."flowId" AS flow_id,
+               cm."templateName" AS template_name,
+               COUNT(*) FILTER (WHERE cm.status IN ('SENT','DELIVERED','READ')
+                 AND cm."sentAt" >= ${fromUtc} AND cm."sentAt" <= ${toUtc})::int AS success,
+               COUNT(*) FILTER (WHERE cm.status = 'FAILED'
+                 AND cm."failedAt" >= ${fromUtc} AND cm."failedAt" <= ${toUtc})::int AS failed
+        FROM "CampaignMessage" cm
+        JOIN "Campaign" c ON c.id = cm."campaignId"
+        WHERE cm."tenantId" = ${tenantId}
+        GROUP BY 1, 2
+      `),
+      this.prisma.wabaTemplate.findMany({ select: { name: true, category: true } }),
+    ]);
+
+    const categoryByTemplate = new Map(templates.map((t) => [t.name, t.category]));
+    const priceFor = (templateName: string | null): number => {
+      const category = (templateName && categoryByTemplate.get(templateName)) || 'MARKETING';
+      return CLOUD_API_MSG_PRICE_USD[category] ?? CLOUD_API_MSG_PRICE_USD.MARKETING;
+    };
+    const round2 = (v: number) => Math.round(v * 100) / 100;
+
+    const byFlow = new Map<string | null, { success: number; failed: number; cost: number }>();
+    for (const r of rows) {
+      const current = byFlow.get(r.flow_id) ?? { success: 0, failed: 0, cost: 0 };
+      const success = Number(r.success);
+      current.success += success;
+      current.failed += Number(r.failed);
+      current.cost += success * priceFor(r.template_name);
+      byFlow.set(r.flow_id, current);
+    }
+
+    const instanceLabels = await this.instanceLabelMap(flows.map((f) => f.instanceId));
+    const items = flows.map((f) => {
+      const c = byFlow.get(f.id) ?? { success: 0, failed: 0, cost: 0 };
+      const kind = (f.config as { kind?: string } | null)?.kind;
+      return {
+        flowId: f.id,
+        name: f.name,
+        slug: f.slug,
+        active: f.active,
+        instanceLabel: instanceLabels.get(f.instanceId) ?? null,
+        // INVITE_POLL entrega pra quem comprou; os demais fluxos tocam leads
+        audience: kind === 'INVITE_POLL' ? 'BUYER' : 'LEAD',
+        attempts: c.success + c.failed,
+        success: c.success,
+        failed: c.failed,
+        costUsd: round2(c.cost),
+      };
+    });
+
+    const manual = byFlow.get(null);
+    if (manual && manual.success + manual.failed > 0) {
+      items.push({
+        flowId: null as unknown as string,
+        name: 'Disparos manuais (1:1)',
+        slug: null as unknown as string,
+        active: true,
+        instanceLabel: null,
+        audience: 'ALL',
+        attempts: manual.success + manual.failed,
+        success: manual.success,
+        failed: manual.failed,
+        costUsd: round2(manual.cost),
+      });
+    }
+
+    const totalCostUsd = round2(items.reduce((sum, i) => sum + i.costUsd, 0));
+    return { items, totalCostUsd };
   }
 
   async instances(range: StatsRange) {
