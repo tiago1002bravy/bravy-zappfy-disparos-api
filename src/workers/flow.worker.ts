@@ -224,6 +224,17 @@ export function createFlowWorkers(deps: { connection: IORedis; prisma: PrismaCli
         }
       }
 
+      // Telefones já registrados na campanha — o filtro precisa vir ANTES do
+      // corte de batchSize: a audiência chega ordenada por telefone (DISTINCT
+      // ON), então sem ele os primeiros N candidatos são sempre os mesmos já
+      // registrados, o skipDuplicates zera o lote e destinatário novo (telefone
+      // além da posição N) nunca é alcançado.
+      const registered = await prisma.campaignMessage.findMany({
+        where: { campaignId: campaign.id },
+        select: { phone: true },
+      });
+      const registeredPhones = new Set(registered.map((m) => m.phone));
+
       // 5. Monta mensagens (template + params por candidato)
       const batchLimit = config.batchSize ?? candidates.length;
       const dayBudget =
@@ -233,6 +244,7 @@ export function createFlowWorkers(deps: { connection: IORedis; prisma: PrismaCli
       const toCreate: Prisma.CampaignMessageCreateManyInput[] = [];
       for (const c of candidates) {
         if (toCreate.length >= limit) break;
+        if (registeredPhones.has(c.phone)) continue;
         let templateNameResolved: string | undefined;
         let chatSource = config.chatSource;
 
