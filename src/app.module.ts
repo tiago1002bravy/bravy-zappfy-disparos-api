@@ -27,6 +27,7 @@ import { ContactsModule } from './modules/contacts/contacts.module';
 import { WabaTemplatesModule } from './modules/waba-templates/waba-templates.module';
 import { CampaignsModule } from './modules/campaigns/campaigns.module';
 import { FlowsModule } from './modules/flows/flows.module';
+import { CreditsModule } from './modules/credits/credits.module';
 import { QueueModule } from './queue/queue.module';
 import { TimeoutInterceptor } from './common/interceptors/timeout.interceptor';
 import { RequestLoggerMiddleware } from './common/middleware/request-logger.middleware';
@@ -64,6 +65,7 @@ import { RequestLoggerMiddleware } from './common/middleware/request-logger.midd
     WabaTemplatesModule,
     CampaignsModule,
     FlowsModule,
+    CreditsModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

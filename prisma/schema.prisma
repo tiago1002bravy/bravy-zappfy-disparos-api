@@ -52,6 +52,7 @@ model Tenant {
   campaigns            Campaign[]
   campaignMessages     CampaignMessage[]
   flows                Flow[]
+  creditEntries        CreditEntry[]
 }
 
 enum Role {
@@ -471,10 +472,27 @@ model Instance {
   tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   campaignMessages CampaignMessage[]
   flows            Flow[]
+  creditEntries    CreditEntry[]
 
   @@unique([tenantId, instanceName])
   @@index([tenantId, active, priority])
   @@index([tenantId, provider, active])
+}
+
+// Ledger manual de crédito pra disparo (billing real fica no BSP e não tem API;
+// o usuário registra recargas e o dashboard desconta o custo estimado por envio)
+model CreditEntry {
+  id          String   @id @default(cuid())
+  tenantId    String
+  instanceId  String
+  amountCents Int // USD em centavos; negativo permite ajuste manual
+  note        String?
+  createdAt   DateTime @default(now())
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  instance Instance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, instanceId, createdAt])
 }
 
 // Espelho local dos templates aprovados da WABA (sync-only — criação/aprovação

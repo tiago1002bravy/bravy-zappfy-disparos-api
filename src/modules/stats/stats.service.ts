@@ -247,9 +247,10 @@ export class StatsService {
   }
 
   async flows(range: StatsRange) {
-    const { tenantId, fromUtc, toUtc } = await this.resolveRange(range);
+    const { tenantId, tz, from, to, fromUtc, toUtc } = await this.resolveRange(range);
+    const singleDay = from === to;
 
-    const [flows, rows, templates] = await Promise.all([
+    const [flows, rows, priceFor, seriesRows] = await Promise.all([
       this.prisma.flow.findMany({
         orderBy: { createdAt: 'asc' },
         select: { id: true, name: true, slug: true, active: true, instanceId: true, config: true },
@@ -266,14 +267,23 @@ export class StatsService {
         WHERE cm."tenantId" = ${tenantId}
         GROUP BY 1, 2
       `),
-      this.prisma.wabaTemplate.findMany({ select: { name: true, category: true } }),
+      this.priceByTemplate(),
+      // Série pro gráfico: por hora quando o período é 1 dia, por dia caso contrário
+      this.prisma.$queryRaw<Array<{ bucket: string; sent: bigint | number }>>(Prisma.sql`
+        SELECT to_char(
+                 date_trunc(${singleDay ? 'hour' : 'day'}, "sentAt" AT TIME ZONE 'UTC' AT TIME ZONE ${tz}),
+                 ${singleDay ? 'HH24:00' : 'YYYY-MM-DD'}
+               ) AS bucket,
+               COUNT(*)::int AS sent
+        FROM "CampaignMessage"
+        WHERE "tenantId" = ${tenantId}
+          AND status IN ('SENT', 'DELIVERED', 'READ')
+          AND "sentAt" >= ${fromUtc} AND "sentAt" <= ${toUtc}
+        GROUP BY 1
+        ORDER BY 1
+      `),
     ]);
 
-    const categoryByTemplate = new Map(templates.map((t) => [t.name, t.category]));
-    const priceFor = (templateName: string | null): number => {
-      const category = (templateName && categoryByTemplate.get(templateName)) || 'MARKETING';
-      return CLOUD_API_MSG_PRICE_USD[category] ?? CLOUD_API_MSG_PRICE_USD.MARKETING;
-    };
     const round2 = (v: number) => Math.round(v * 100) / 100;
 
     const byFlow = new Map<string | null, { success: number; failed: number; cost: number }>();
@@ -322,7 +332,77 @@ export class StatsService {
     }
 
     const totalCostUsd = round2(items.reduce((sum, i) => sum + i.costUsd, 0));
-    return { items, totalCostUsd };
+    return {
+      items,
+      totalCostUsd,
+      series: {
+        granularity: singleDay ? ('hour' as const) : ('day' as const),
+        points: seriesRows.map((r) => ({ bucket: r.bucket, sent: Number(r.sent) })),
+      },
+    };
+  }
+
+  /** Preço USD por mensagem, por nome de template (categoria da WABA). */
+  private async priceByTemplate(): Promise<(templateName: string | null) => number> {
+    const templates = await this.prisma.wabaTemplate.findMany({ select: { name: true, category: true } });
+    const categoryByTemplate = new Map(templates.map((t) => [t.name, t.category]));
+    return (templateName: string | null): number => {
+      const category = (templateName && categoryByTemplate.get(templateName)) || 'MARKETING';
+      return CLOUD_API_MSG_PRICE_USD[category] ?? CLOUD_API_MSG_PRICE_USD.MARKETING;
+    };
+  }
+
+  /**
+   * Saldo financeiro estimado por instância: recargas manuais (CreditEntry)
+   * menos o custo estimado das enviadas desde a primeira recarga. O billing
+   * real fica no BSP (sem API) — isto é um ledger operacional.
+   */
+  private async walletByInstance(instanceIds: string[]) {
+    const out = new Map<
+      string,
+      { balanceUsd: number; avgDailyCostUsd: number; daysLeft: number | null; lastTopUpAt: Date }
+    >();
+    if (!instanceIds.length) return out;
+
+    const entries = await this.prisma.creditEntry.findMany({
+      where: { instanceId: { in: instanceIds } },
+      select: { instanceId: true, amountCents: true, createdAt: true },
+    });
+    if (!entries.length) return out;
+
+    const priceFor = await this.priceByTemplate();
+    const byInstance = new Map<string, { totalCents: number; firstAt: Date; lastAt: Date }>();
+    for (const e of entries) {
+      const c = byInstance.get(e.instanceId) ?? { totalCents: 0, firstAt: e.createdAt, lastAt: e.createdAt };
+      c.totalCents += e.amountCents;
+      if (e.createdAt < c.firstAt) c.firstAt = e.createdAt;
+      if (e.createdAt > c.lastAt) c.lastAt = e.createdAt;
+      byInstance.set(e.instanceId, c);
+    }
+
+    const last7d = new Date(Date.now() - 7 * 86_400_000);
+    for (const [instanceId, ledger] of byInstance) {
+      const [sinceTopUp, recent] = await Promise.all([
+        this.prisma.campaignMessage.groupBy({
+          by: ['templateName'],
+          where: { instanceId, status: { in: [...SENT_FAMILY] }, sentAt: { gte: ledger.firstAt } },
+          _count: { _all: true },
+        }),
+        this.prisma.campaignMessage.groupBy({
+          by: ['templateName'],
+          where: { instanceId, status: { in: [...SENT_FAMILY] }, sentAt: { gte: last7d } },
+          _count: { _all: true },
+        }),
+      ]);
+      const spentUsd = sinceTopUp.reduce((sum, r) => sum + r._count._all * priceFor(r.templateName), 0);
+      const cost7dUsd = recent.reduce((sum, r) => sum + r._count._all * priceFor(r.templateName), 0);
+      const balanceUsd = Math.round((ledger.totalCents / 100 - spentUsd) * 100) / 100;
+      const avgDailyCostUsd = Math.round((cost7dUsd / 7) * 100) / 100;
+      const daysLeft =
+        avgDailyCostUsd > 0 ? Math.round((Math.max(balanceUsd, 0) / avgDailyCostUsd) * 10) / 10 : null;
+      out.set(instanceId, { balanceUsd, avgDailyCostUsd, daysLeft, lastTopUpAt: ledger.lastAt });
+    }
+    return out;
   }
 
   async instances(range: StatsRange) {
@@ -376,6 +456,9 @@ export class StatsService {
 
     const sent24hById = new Map(sent24hGrouped.map((r) => [r.instanceId as string, r._count._all]));
     const queued24hById = new Map(queued24hGrouped.map((r) => [r.instanceId as string, r._count._all]));
+    const wallets = await this.walletByInstance(
+      instances.filter((i) => i.provider === 'CLOUD_API').map((i) => i.id),
+    );
 
     const execByName = new Map<string, { sent: number; failed: number }>();
     for (const row of execGrouped) {
@@ -423,6 +506,7 @@ export class StatsService {
             sentLast24h: sent24h,
             balance: Math.max(0, cap - sent24h - inFlight24h),
           },
+          wallet: wallets.get(inst.id) ?? null,
           counts: {
             sent: c.sent,
             // Sem webhook apontando pra cá não há recibo — null em vez de 0 enganoso
@@ -478,12 +562,20 @@ export class StatsService {
       },
     });
 
+    // Regra operacional: cada segmento deve ter no mínimo 3 grupos futuros prontos
+    const MIN_FUTURE = 3;
     return {
+      minFuture: MIN_FUTURE,
       items: shortlinks.map((sl) => {
         const usable = sl.items.filter((i) => i.status === 'ACTIVE');
         const current = usable[0] ?? null;
         const future = usable.slice(1);
         const participants = current?.participantsCount ?? current?.group.participantsCount ?? null;
+        const fillPct = participants != null && sl.hardCap > 0 ? participants / sl.hardCap : null;
+        let health: 'ok' | 'warn' | 'critical';
+        if (!current || (future.length === 0 && (fillPct == null || fillPct >= 0.8))) health = 'critical';
+        else if (future.length < MIN_FUTURE) health = 'warn';
+        else health = 'ok';
         return {
           slug: sl.slug,
           hardCap: sl.hardCap,
@@ -494,7 +586,9 @@ export class StatsService {
             ? { name: current.group.name, remoteId: current.group.remoteId, participants }
             : null,
           futureReady: future.length,
+          futureMissing: Math.max(0, MIN_FUTURE - future.length),
           futureNames: future.slice(0, 3).map((i) => i.group.name),
+          health,
         };
       }),
     };
