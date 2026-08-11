@@ -327,8 +327,9 @@ export class StatsService {
 
   async instances(range: StatsRange) {
     const { fromUtc, toUtc } = await this.resolveRange(range);
+    const last24h = new Date(Date.now() - 86_400_000);
 
-    const [instances, execGrouped, cmGrouped, cmFailedGrouped] = await Promise.all([
+    const [instances, execGrouped, cmGrouped, cmFailedGrouped, sent24hGrouped, queued24hGrouped] = await Promise.all([
       this.prisma.instance.findMany({
         orderBy: [{ priority: 'asc' }, { createdAt: 'asc' }],
         select: {
@@ -360,7 +361,21 @@ export class StatsService {
         where: { instanceId: { not: null }, status: 'FAILED', failedAt: { gte: fromUtc, lte: toUtc } },
         _count: { _all: true },
       }),
+      // Saldo 24h: espelha o remainingBudget do dispatcher (cap - enviadas - em voo)
+      this.prisma.campaignMessage.groupBy({
+        by: ['instanceId'],
+        where: { instanceId: { not: null }, sentAt: { gte: last24h } },
+        _count: { _all: true },
+      }),
+      this.prisma.campaignMessage.groupBy({
+        by: ['instanceId'],
+        where: { instanceId: { not: null }, status: 'QUEUED', queuedAt: { gte: last24h } },
+        _count: { _all: true },
+      }),
     ]);
+
+    const sent24hById = new Map(sent24hGrouped.map((r) => [r.instanceId as string, r._count._all]));
+    const queued24hById = new Map(queued24hGrouped.map((r) => [r.instanceId as string, r._count._all]));
 
     const execByName = new Map<string, { sent: number; failed: number }>();
     for (const row of execGrouped) {
@@ -393,6 +408,9 @@ export class StatsService {
       if (inst.provider === 'CLOUD_API') {
         const c = cmById.get(inst.id) ?? { sent: 0, delivered: 0, read: 0, failed: 0 };
         const hasReceipts = c.delivered + c.read > 0;
+        const cap = inst.dailyCap ?? 250;
+        const sent24h = sent24hById.get(inst.id) ?? 0;
+        const inFlight24h = queued24hById.get(inst.id) ?? 0;
         return {
           id: inst.id,
           label: inst.label,
@@ -400,6 +418,11 @@ export class StatsService {
           displayPhoneNumber: inst.displayPhoneNumber,
           dailyCap: inst.dailyCap,
           active: inst.active,
+          budget: {
+            cap,
+            sentLast24h: sent24h,
+            balance: Math.max(0, cap - sent24h - inFlight24h),
+          },
           counts: {
             sent: c.sent,
             // Sem webhook apontando pra cá não há recibo — null em vez de 0 enganoso
@@ -441,6 +464,40 @@ export class StatsService {
     }
 
     return items.sort((a, b) => b.counts.sent - a.counts.sent);
+  }
+
+  async groups() {
+    const shortlinks = await this.prisma.groupShortlink.findMany({
+      where: { active: true },
+      orderBy: { slug: 'asc' },
+      include: {
+        items: {
+          orderBy: { order: 'asc' },
+          include: { group: { select: { name: true, remoteId: true, participantsCount: true } } },
+        },
+      },
+    });
+
+    return {
+      items: shortlinks.map((sl) => {
+        const usable = sl.items.filter((i) => i.status === 'ACTIVE');
+        const current = usable[0] ?? null;
+        const future = usable.slice(1);
+        const participants = current?.participantsCount ?? current?.group.participantsCount ?? null;
+        return {
+          slug: sl.slug,
+          hardCap: sl.hardCap,
+          autoCreate: sl.autoCreate,
+          totalGroups: sl.items.length,
+          fullGroups: sl.items.filter((i) => i.status === 'FULL').length,
+          current: current
+            ? { name: current.group.name, remoteId: current.group.remoteId, participants }
+            : null,
+          futureReady: future.length,
+          futureNames: future.slice(0, 3).map((i) => i.group.name),
+        };
+      }),
+    };
   }
 
   async campaigns(range: StatsRange & { status?: string; kind?: 'GROUP' | 'CONTACT'; limit?: number }) {

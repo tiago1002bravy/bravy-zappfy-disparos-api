@@ -46,6 +46,11 @@ export class StatsController {
     return this.svc.flows(q);
   }
 
+  @Get('groups')
+  groups() {
+    return this.svc.groups();
+  }
+
   @Get('campaigns')
   campaigns(@Query() q: CampaignsQueryDto) {
     return this.svc.campaigns(q);
