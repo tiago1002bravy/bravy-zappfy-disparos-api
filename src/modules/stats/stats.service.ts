@@ -360,7 +360,13 @@ export class StatsService {
   private async walletByInstance(instanceIds: string[]) {
     const out = new Map<
       string,
-      { balanceUsd: number; avgDailyCostUsd: number; daysLeft: number | null; lastTopUpAt: Date }
+      {
+        balanceUsd: number;
+        totalLoadedUsd: number;
+        avgDailyCostUsd: number;
+        daysLeft: number | null;
+        lastTopUpAt: Date;
+      }
     >();
     if (!instanceIds.length) return out;
 
@@ -400,7 +406,13 @@ export class StatsService {
       const avgDailyCostUsd = Math.round((cost7dUsd / 7) * 100) / 100;
       const daysLeft =
         avgDailyCostUsd > 0 ? Math.round((Math.max(balanceUsd, 0) / avgDailyCostUsd) * 10) / 10 : null;
-      out.set(instanceId, { balanceUsd, avgDailyCostUsd, daysLeft, lastTopUpAt: ledger.lastAt });
+      out.set(instanceId, {
+        balanceUsd,
+        totalLoadedUsd: Math.round(ledger.totalCents) / 100,
+        avgDailyCostUsd,
+        daysLeft,
+        lastTopUpAt: ledger.lastAt,
+      });
     }
     return out;
   }
