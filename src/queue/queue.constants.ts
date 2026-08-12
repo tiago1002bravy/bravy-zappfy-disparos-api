@@ -34,6 +34,13 @@ export interface ContactSyncJobData {
   tenantId?: string;
 }
 
+export const QUEUE_GROUP_BUFFER = 'group-buffer';
+
+export interface GroupBufferJobData {
+  // Presente no trigger manual (só o tenant); ausente no repeatable (varre todos)
+  tenantId?: string;
+}
+
 export const QUEUE_CAMPAIGN_DISPATCH = 'campaign-dispatch';
 export const QUEUE_CAMPAIGN_SEND = 'campaign-send-single';
 export const QUEUE_FLOW_RUN = 'flow-run';

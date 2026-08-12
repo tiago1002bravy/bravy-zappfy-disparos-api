@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { requireTenantId } from '../../common/tenant-context';
+import { MIN_FUTURE_BUFFER, splitBuffer } from '../shortlinks/buffer.util';
 import { Prisma } from '@prisma/client';
 
 export interface StatsRange {
@@ -574,19 +575,17 @@ export class StatsService {
       },
     });
 
-    // Regra operacional: cada segmento deve ter no mínimo 3 grupos futuros prontos
-    const MIN_FUTURE = 3;
+    // Regra operacional (compartilhada com o worker group-buffer):
+    // menos de MIN_FUTURE_BUFFER futuros → o worker cria AUTO_CREATE_BATCH novos
     return {
-      minFuture: MIN_FUTURE,
+      minFuture: MIN_FUTURE_BUFFER,
       items: shortlinks.map((sl) => {
-        const usable = sl.items.filter((i) => i.status === 'ACTIVE');
-        const current = usable[0] ?? null;
-        const future = usable.slice(1);
+        const { current, future } = splitBuffer(sl.items);
         const participants = current?.participantsCount ?? current?.group.participantsCount ?? null;
         const fillPct = participants != null && sl.hardCap > 0 ? participants / sl.hardCap : null;
         let health: 'ok' | 'warn' | 'critical';
         if (!current || (future.length === 0 && (fillPct == null || fillPct >= 0.8))) health = 'critical';
-        else if (future.length < MIN_FUTURE) health = 'warn';
+        else if (future.length < MIN_FUTURE_BUFFER) health = 'warn';
         else health = 'ok';
         return {
           slug: sl.slug,
@@ -598,7 +597,7 @@ export class StatsService {
             ? { name: current.group.name, remoteId: current.group.remoteId, participants }
             : null,
           futureReady: future.length,
-          futureMissing: Math.max(0, MIN_FUTURE - future.length),
+          futureMissing: Math.max(0, MIN_FUTURE_BUFFER - future.length),
           futureNames: future.slice(0, 3).map((i) => i.group.name),
           health,
         };

@@ -24,6 +24,7 @@ import { getOrderedPool, recordInstanceFailure, recordInstanceSuccess } from './
 import { createContactSyncWorker, registerContactSyncRepeatables } from './workers/contact-sync.worker';
 import { createCampaignWorkers } from './workers/campaign.worker';
 import { createFlowWorkers, registerFlowScheduler } from './workers/flow.worker';
+import { createGroupBufferWorker, registerGroupBufferRepeatables } from './workers/group-buffer.worker';
 import { CloudApiClient } from './modules/meta/cloud-api.client';
 
 const log = (msg: string, extra?: unknown) =>
@@ -552,6 +553,12 @@ registerContactSyncRepeatables(connection).catch((err) =>
 const campaignWorkers = createCampaignWorkers({ connection, prisma, cloudApi: new CloudApiClient() });
 
 // Fluxos nativos (substituem a esteira n8n): agendador + runner
+// Buffer proativo de grupos dos shortlinks (< 2 futuros -> cria 3)
+const groupBufferWorker = createGroupBufferWorker({ connection, prisma });
+registerGroupBufferRepeatables(connection).catch((err) =>
+  log(`failed to register group-buffer repeatables: ${(err as Error).message}`),
+);
+
 const flowWorkers = createFlowWorkers({ connection, prisma });
 registerFlowScheduler(connection).catch((err) =>
   log(`failed to register flow scheduler: ${(err as Error).message}`),
@@ -566,6 +573,7 @@ const shutdown = async () => {
   await sendFinalizeWorker.close();
   await updateWorker.close();
   await contactSyncWorker.close();
+  await groupBufferWorker.close();
   for (const w of campaignWorkers) await w.close();
   for (const w of flowWorkers) await w.close();
   await flowProducer.close();

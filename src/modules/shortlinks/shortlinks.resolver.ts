@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ZappfyClient } from '../zappfy/zappfy.client';
 import { resolveShortlinkConnection, type ShortlinkConn } from './shortlink-connection.helper';
+import { createShortlinkGroup } from './auto-create.util';
 import { getOrderedPool } from '../../common/instance-pool.util';
 import { decryptToken } from '../../common/crypto.util';
 import type { GroupShortlink, GroupShortlinkItem, Group, Tenant, Prisma } from '@prisma/client';
@@ -411,6 +412,10 @@ export class ShortlinksResolver {
   }
 
   // === auto-create ===
+  // Rede de segurança reativa (todos lotaram no meio de um pico de cliques);
+  // a manutenção normal do buffer é do worker group-buffer, que cria com
+  // antecedência e aplica admins. Aqui applyAdmins fica OFF pra não segurar
+  // o redirect do lead.
   private async tryAutoCreate(
     sl: SlWithItems,
   ): Promise<(GroupShortlinkItem & { group: Group }) | null> {
@@ -422,72 +427,19 @@ export class ShortlinksResolver {
       this.logEvent(sl.id, null, 'no_connection', { phase: 'auto_create' });
       return null;
     }
-    const token = conn.token;
     // Registra o grupo com a instância que de fato criou (pool vivo quando failover
     // ligado); no modo legado, mantém o autoCreateInstance configurado.
     const creatorInstance = this.poolFailover
       ? conn.instanceName
       : (sl.autoCreateInstance as string);
 
-    const n = sl.items.length + 1;
-    const tpl = sl.autoCreateTemplate ?? 'Grupo {N}';
-    const name = tpl.replace('{N}', String(n));
-
-    // Bot conectado precisa estar em pelo menos 1 participante. Usa defaultParticipants do tenant ou um placeholder.
-    const participants = sl.tenant.defaultParticipants?.length
-      ? sl.tenant.defaultParticipants
-      : [];
-
-    if (participants.length === 0) {
-      this.log.warn(`auto-create: defaultParticipants vazio, criando grupo so com o bot`);
-    }
-
-    const created = await this.zappfy.createGroup(token, name, participants);
-    if (!created.id) {
-      this.log.warn(`auto-create: zappfy nao retornou id`);
-      return null;
-    }
-
-    // Pega invite do grupo recem-criado
-    const info = await this.zappfy.getGroupInfo(token, created.id, {
-      getInviteLink: true,
-      force: true,
-    });
-    if (!info.inviteLink) {
-      this.log.warn(`auto-create: invite link nao gerado`);
-      return null;
-    }
-
-    // Cria Group no banco
-    const group = await this.prisma.group.create({
-      data: {
-        tenantId: sl.tenantId,
-        instanceName: creatorInstance,
-        remoteId: created.id,
-        name,
-        syncedAt: new Date(),
-      },
-    });
-
-    const nextOrder = sl.items.reduce((m, i) => Math.max(m, i.order), -1) + 1;
-    const item = await this.prisma.groupShortlinkItem.create({
-      data: {
-        shortlinkId: sl.id,
-        groupId: group.id,
-        order: nextOrder,
-        currentInviteUrl: info.inviteLink,
-        lastRefreshedAt: new Date(),
-        nextCheckAtClicks: sl.initialClickBudget,
-      },
-      include: { group: true },
-    });
-    this.log.log(`auto-create OK: ${name} (${created.id}) pro slug=${sl.slug}`);
-    this.logEvent(sl.id, item.id, 'auto_create', {
-      groupName: name,
-      remoteId: created.id,
-      instance: sl.autoCreateInstance,
-    });
-    return item;
+    return createShortlinkGroup(
+      this.prisma,
+      this.zappfy,
+      sl,
+      { token: conn.token, instanceName: creatorInstance },
+      { applyAdmins: false, log: (msg) => this.log.log(msg) },
+    );
   }
 
   // === refresh invite individual ===
