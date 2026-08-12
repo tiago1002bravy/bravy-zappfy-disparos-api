@@ -18,7 +18,8 @@ const SHORTLINK_INCLUDE = {
 /**
  * Buffer proativo de grupos: a cada tick, shortlink ativo com autoCreate que
  * tiver menos de MIN_FUTURE_BUFFER grupos futuros prontos ganha um lote de
- * AUTO_CREATE_BATCH grupos novos (com admins padrão do tenant aplicados).
+ * AUTO_CREATE_BATCH grupos novos, com identidade (descrição/foto/announce/locked)
+ * clonada do grupo anterior. NUNCA adiciona/promove números (vetor de block).
  */
 export function createGroupBufferWorker(deps: {
   connection: IORedis;
@@ -70,7 +71,7 @@ export function createGroupBufferWorker(deps: {
                   zappfy,
                   fresh,
                   { token: decryptToken(p.instanceTokenEnc), instanceName: p.instanceName },
-                  { applyAdmins: true, log },
+                  { cloneIdentity: true, log },
                 );
                 if (item) {
                   created = true;

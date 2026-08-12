@@ -414,7 +414,7 @@ export class ShortlinksResolver {
   // === auto-create ===
   // Rede de segurança reativa (todos lotaram no meio de um pico de cliques);
   // a manutenção normal do buffer é do worker group-buffer, que cria com
-  // antecedência e aplica admins. Aqui applyAdmins fica OFF pra não segurar
+  // antecedência e clona identidade. Aqui cloneIdentity fica OFF pra não segurar
   // o redirect do lead.
   private async tryAutoCreate(
     sl: SlWithItems,
@@ -438,7 +438,7 @@ export class ShortlinksResolver {
       this.zappfy,
       sl,
       { token: conn.token, instanceName: creatorInstance },
-      { applyAdmins: false, log: (msg) => this.log.log(msg) },
+      { cloneIdentity: false, log: (msg) => this.log.log(msg) },
     );
   }
 

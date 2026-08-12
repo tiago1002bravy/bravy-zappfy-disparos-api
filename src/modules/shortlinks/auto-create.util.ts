@@ -9,12 +9,30 @@ export type ShortlinkWithItems = GroupShortlink & {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Baixa uma imagem e devolve como data URI (pro updateGroupPicture). */
+async function fetchAsDataUri(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    const mime = res.headers.get('content-type') ?? 'image/jpeg';
+    return `data:${mime};base64,${buf.toString('base64')}`;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Cria UM grupo novo pro shortlink e registra Group + item ACTIVE no fim da
  * rotação. Compartilhado entre o resolver reativo (todos lotaram, caminho do
- * clique — applyAdmins OFF pra não segurar o redirect) e o worker de buffer
- * proativo (applyAdmins ON). Funciona com PrismaClient cru (worker sem DI) —
+ * clique — cloneIdentity OFF pra não segurar o redirect) e o worker de buffer
+ * proativo (cloneIdentity ON). Funciona com PrismaClient cru (worker sem DI) —
  * tenantId vem do próprio shortlink.
+ *
+ * REGRA FIXA: nunca adiciona participantes nem promove números a admin — isso
+ * é vetor de block do WhatsApp. O grupo nasce só com o bot (criador/admin);
+ * identidade (descrição/foto) é CLONADA do grupo anterior do próprio shortlink
+ * e announce/locked vêm das flags do tenant.
  *
  * Retorna null em falha "soft" (sem id / sem invite); lança em erro de rede.
  */
@@ -23,39 +41,46 @@ export async function createShortlinkGroup(
   zappfy: ZappfyClient,
   sl: ShortlinkWithItems,
   conn: { token: string; instanceName: string },
-  opts: { applyAdmins?: boolean; log?: (msg: string) => void } = {},
+  opts: { cloneIdentity?: boolean; log?: (msg: string) => void } = {},
 ): Promise<(GroupShortlinkItem & { group: Group }) | null> {
   const log = opts.log ?? (() => undefined);
   const name = nextGroupName(sl.items, sl.autoCreateTemplate);
 
-  const participants = sl.tenant.defaultParticipants?.length ? sl.tenant.defaultParticipants : [];
-  if (participants.length === 0) {
-    log(`auto-create ${sl.slug}: defaultParticipants vazio, criando grupo só com o bot`);
-  }
-
-  const created = await zappfy.createGroup(conn.token, name, participants);
+  const created = await zappfy.createGroup(conn.token, name, []);
   if (!created.id) {
     log(`auto-create ${sl.slug}: zappfy não retornou id`);
     return null;
   }
 
-  // Admins padrão do tenant (add + promote) — mesmos passos do applyTenantDefaults
-  // do GroupsService, best-effort; só no caminho proativo (worker), onde os ~5s
-  // de sleeps anti-ban não seguram nenhum request de usuário.
-  const admins = sl.tenant.defaultGroupAdmins ?? [];
-  if (opts.applyAdmins && admins.length) {
+  if (opts.cloneIdentity) {
     try {
-      await zappfy.updateGroupParticipants(conn.token, created.id, 'add', admins);
-    } catch {
-      // best-effort
+      // Grupo anterior mais recente do shortlink como fonte de descrição/foto
+      const source = [...sl.items].sort((a, b) => b.order - a.order)[0];
+      if (source) {
+        const src = await zappfy.getGroupInfo(conn.token, source.group.remoteId, {});
+        if (src.description) {
+          await zappfy.updateGroupDescription(conn.token, created.id, src.description);
+          await sleep(2000);
+        }
+        if (src.pictureUrl) {
+          const dataUri = await fetchAsDataUri(src.pictureUrl);
+          if (dataUri) {
+            await zappfy.updateGroupPicture(conn.token, created.id, dataUri);
+            await sleep(2000);
+          }
+        }
+      }
+      if (sl.tenant.defaultGroupLocked) {
+        await zappfy.updateGroupLocked(conn.token, created.id, true);
+        await sleep(2000);
+      }
+      if (sl.tenant.defaultGroupAnnounce) {
+        await zappfy.updateGroupAnnounce(conn.token, created.id, true);
+        await sleep(2000);
+      }
+    } catch (err) {
+      log(`auto-create ${sl.slug}: clone de identidade parcial: ${(err as Error).message}`);
     }
-    await sleep(3000);
-    try {
-      await zappfy.updateGroupParticipants(conn.token, created.id, 'promote', admins);
-    } catch {
-      // best-effort
-    }
-    await sleep(2000);
   }
 
   const info = await zappfy.getGroupInfo(conn.token, created.id, { getInviteLink: true, force: true });

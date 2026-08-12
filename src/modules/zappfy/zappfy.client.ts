@@ -43,6 +43,8 @@ export interface ZappfyGroupInfo {
   name: string;
   participants: string[]; // phone numbers normalizados
   inviteLink?: string;
+  description?: string;
+  pictureUrl?: string;
 }
 
 export interface ZappfyUpdateGroupOpts {
@@ -164,6 +166,8 @@ export class ZappfyClient {
         (g?.inviteLink as string) ??
         (data?.inviteLink as string) ??
         undefined,
+      description: (g?.Topic as string) ?? (g?.description as string) ?? (g?.desc as string) ?? undefined,
+      pictureUrl: (g?.imgUrl as string) ?? (g?.pictureUrl as string) ?? undefined,
     };
   }
 
