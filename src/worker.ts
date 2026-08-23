@@ -26,6 +26,7 @@ import { createCampaignWorkers } from './workers/campaign.worker';
 import { createFlowWorkers, registerFlowScheduler } from './workers/flow.worker';
 import { createGroupBufferWorker, registerGroupBufferRepeatables } from './workers/group-buffer.worker';
 import { CloudApiClient } from './modules/meta/cloud-api.client';
+import { StorageService } from './modules/media/storage.service';
 
 const log = (msg: string, extra?: unknown) =>
   console.log(`[worker] ${msg}`, extra ?? '');
@@ -46,6 +47,7 @@ const connection = new IORedis({
 
 const prisma = new PrismaClient();
 const zappfy = new ZappfyClient();
+const storage = new StorageService();
 const flowProducer = new FlowProducer({ connection });
 
 const minio = new MinioClient({
@@ -63,6 +65,25 @@ async function objectAsDataUri(key: string, mime: string): Promise<string> {
   for await (const c of stream as AsyncIterable<Buffer>) chunks.push(c);
   const b64 = Buffer.concat(chunks).toString('base64');
   return `data:${mime};base64,${b64}`;
+}
+
+const PUBLIC_API_URL = process.env.PUBLIC_API_URL?.replace(/\/$/, '');
+
+/**
+ * Monta a URL pública assinada da mídia (endpoint /media/raw/:id) pro campo
+ * `file` do /send/media da Uazapi.
+ *
+ * Por que não data URI: confirmado empiricamente (2026-08) que a Uazapi
+ * rejeita vídeo MP4 em base64 inline ("invalid video format"), mesmo sendo
+ * um MP4 válido. URL pública funciona — a Uazapi baixa o arquivo ela mesma.
+ */
+function buildPublicMediaUrl(mediaId: string): string {
+  if (!PUBLIC_API_URL) {
+    throw new Error(
+      'PUBLIC_API_URL não configurada — necessária para enviar mídia de campanha (a Uazapi busca o arquivo por URL pública)',
+    );
+  }
+  return `${PUBLIC_API_URL}${storage.buildSignedRawUrl(mediaId, 'raw')}`;
 }
 
 /**
@@ -279,7 +300,7 @@ type MessageWithMedias = {
   mentionAll: boolean;
   pollChoices: string[];
   pollSelectableCount: number | null;
-  medias: Array<{ kind: string; media: { s3Key: string; mime: string } }>;
+  medias: Array<{ kind: string; media: { id: string; s3Key: string; mime: string } }>;
 };
 
 async function sendMessageToGroup(
@@ -303,11 +324,11 @@ async function sendMessageToGroup(
     };
     for (let i = 0; i < message.medias.length; i++) {
       const mm = message.medias[i];
-      const dataUri = await objectAsDataUri(mm.media.s3Key, mm.media.mime);
+      const fileUrl = buildPublicMediaUrl(mm.media.id);
       const explicitType = mm.kind === 'AUTO' ? undefined : kindToType[mm.kind];
       await zappfy.sendMedia(token, {
         number: groupRemoteId,
-        file: dataUri,
+        file: fileUrl,
         mime: mm.media.mime,
         type: explicitType,
         caption: i === 0 ? (message.text ?? undefined) : undefined,
