@@ -19,7 +19,9 @@ const SHORTLINK_INCLUDE = {
  * Buffer proativo de grupos: a cada tick, shortlink ativo com autoCreate que
  * tiver menos de MIN_FUTURE_BUFFER grupos futuros prontos ganha um lote de
  * AUTO_CREATE_BATCH grupos novos, com identidade (descrição/foto/announce/locked)
- * clonada do grupo anterior. NUNCA adiciona/promove números (vetor de block).
+ * clonada do grupo anterior (foto sempre prioriza o default do tenant) e os
+ * números de `tenant.defaultGroupAdmins` adicionados na criação + promovidos a
+ * admin (decisão 26/08/2026 — ver auto-create.util.ts pro histórico e timing).
  */
 export function createGroupBufferWorker(deps: {
   connection: IORedis;
@@ -71,7 +73,7 @@ export function createGroupBufferWorker(deps: {
                   zappfy,
                   fresh,
                   { token: decryptToken(p.instanceTokenEnc), instanceName: p.instanceName },
-                  { cloneIdentity: true, log },
+                  { cloneIdentity: true, addTenantAdmins: true, log },
                 );
                 if (item) {
                   created = true;
@@ -85,8 +87,10 @@ export function createGroupBufferWorker(deps: {
               log(`${sl.slug}: criação falhou em todas as instâncias — abortando o lote`);
               break;
             }
-            // Pausa anti-ban entre criações consecutivas (padrão do bulk-create)
-            if (i < AUTO_CREATE_BATCH - 1) await new Promise((r) => setTimeout(r, 8_000));
+            // Pausa anti-ban entre criações consecutivas. 20s (era 8s) porque
+            // cada criação agora inclui add+promote de admins padrão — a ação
+            // de maior risco de block segundo o dono do produto (26/08/2026).
+            if (i < AUTO_CREATE_BATCH - 1) await new Promise((r) => setTimeout(r, 20_000));
           }
         } catch (err) {
           log(`${sl.slug}: erro no processamento: ${(err as Error).message}`);

@@ -76,11 +76,14 @@ export class ZappfyClient {
     token: string,
     name: string,
     participants: string[],
+    pictureDataUri?: string,
   ): Promise<ZappfyGroup> {
-    const { data } = await this.http(token).post('/group/create', {
-      name,
-      participants,
-    });
+    const body: Record<string, unknown> = { name, participants };
+    // Best-effort: a Uazapi aceita o campo (não retorna erro), mas /group/info
+    // não confirma de volta se a foto realmente aplicou (limitação conhecida) —
+    // por isso o caller ainda deve chamar updateGroupPicture como garantia.
+    if (pictureDataUri) body.image = pictureDataUri;
+    const { data } = await this.http(token).post('/group/create', body);
     const g = data?.group ?? data;
     return {
       id: String(g.JID ?? g.id ?? ''),
