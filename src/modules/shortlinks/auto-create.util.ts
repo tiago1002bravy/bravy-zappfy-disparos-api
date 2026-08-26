@@ -146,7 +146,19 @@ export async function createShortlinkGroup(
 
   if (admins.length) {
     await sleep(ADMIN_PROMOTE_SETTLE_DELAY_MS);
-    await tryStep('promote_admins', () => zappfy.updateGroupParticipants(conn.token, created.id, 'promote', admins));
+    // A instância criadora já é admin automaticamente — se o número dela
+    // também estiver em `admins` (comum, é um dos 5 de confiança), promover
+    // em lote falha (Uazapi rejeita a chamada inteira ao tentar promover
+    // quem já é admin). Fallback: promove um a um, isolado, só quando o
+    // lote falhar — mantém 1 chamada no caminho feliz.
+    try {
+      await zappfy.updateGroupParticipants(conn.token, created.id, 'promote', admins);
+    } catch (err) {
+      log(`auto-create ${sl.slug}: promote em lote falhou (${(err as Error).message}), tentando individualmente`);
+      for (const admin of admins) {
+        await tryStep(`promote_${admin}`, () => zappfy.updateGroupParticipants(conn.token, created.id, 'promote', [admin]));
+      }
+    }
   }
 
   const info = await zappfy.getGroupInfo(conn.token, created.id, { getInviteLink: true, force: true });
