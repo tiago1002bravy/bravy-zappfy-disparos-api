@@ -32,8 +32,8 @@ const log = (msg: string, extra?: unknown) =>
   console.log(`[worker] ${msg}`, extra ?? '');
 
 // Anti-ban: cada child é enfileirado com delay escalonado (em vez de sleep dentro do job)
-const SEND_DELAY_MIN_MS = 3000;
-const SEND_DELAY_MAX_MS = 7000;
+const SEND_DELAY_MIN_MS = 15000;
+const SEND_DELAY_MAX_MS = 30000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const randomDelay = () =>
   SEND_DELAY_MIN_MS + Math.floor(Math.random() * (SEND_DELAY_MAX_MS - SEND_DELAY_MIN_MS + 1));
