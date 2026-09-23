@@ -19,7 +19,10 @@ import { GroupUpdateSchedulesService } from './group-update-schedules.service';
 class CreateGroupUpdateDto {
   @IsOptional() @IsString() instanceName?: string;
   @IsOptional() @IsString() instanceToken?: string;
-  @IsString() groupRemoteId!: string;
+  // Opcional quando shortlinkSlugs vem preenchido (rename por rotação de shortlink)
+  @IsOptional() @IsString() groupRemoteId?: string;
+  @IsOptional() @IsArray() @IsString({ each: true }) shortlinkSlugs?: string[];
+  @IsOptional() @IsInt() @Min(0) @Max(10) shortlinkPrevCount?: number;
   @IsEnum(GroupUpdateTarget) target!: GroupUpdateTarget;
   @IsOptional() @IsString() newName?: string;
   @IsOptional() @IsString() newDescription?: string;
@@ -37,6 +40,8 @@ class PatchGroupUpdateDto {
   @IsOptional() @IsString() instanceName?: string;
   @IsOptional() @IsString() instanceToken?: string;
   @IsOptional() @IsString() groupRemoteId?: string;
+  @IsOptional() @IsArray() @IsString({ each: true }) shortlinkSlugs?: string[];
+  @IsOptional() @IsInt() @Min(0) @Max(10) shortlinkPrevCount?: number;
   @IsOptional() @IsEnum(GroupUpdateTarget) target?: GroupUpdateTarget;
   @IsOptional() @IsString() newName?: string;
   @IsOptional() @IsString() newDescription?: string;
@@ -79,7 +84,7 @@ export class GroupUpdateSchedulesController {
   @Patch(':id') patch(@Param('id') id: string, @Body() dto: PatchGroupUpdateDto) {
     if (dto.action === 'cancel') return this.svc.cancel(id);
     const editableKeys = [
-      'instanceName', 'instanceToken', 'groupRemoteId', 'target',
+      'instanceName', 'instanceToken', 'groupRemoteId', 'shortlinkSlugs', 'shortlinkPrevCount', 'target',
       'newName', 'newDescription', 'newPictureMediaId',
       'type', 'startAt', 'time', 'weekdays', 'cron', 'timezone',
     ] as const;

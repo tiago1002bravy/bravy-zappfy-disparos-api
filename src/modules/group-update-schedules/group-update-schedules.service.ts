@@ -10,7 +10,9 @@ import { dailyToCron, validateCron, weeklyToCron } from '../schedules/cron.util'
 interface CreateInput {
   instanceName?: string;
   instanceToken?: string;
-  groupRemoteId: string;
+  groupRemoteId?: string;
+  shortlinkSlugs?: string[];
+  shortlinkPrevCount?: number;
   target: GroupUpdateTarget;
   newName?: string;
   newDescription?: string;
@@ -46,6 +48,10 @@ export class GroupUpdateSchedulesService {
       cron = dto.cron;
     }
 
+    const slugs = dto.shortlinkSlugs?.filter(Boolean) ?? [];
+    if (!dto.groupRemoteId && !slugs.length)
+      throw new BadRequestException('groupRemoteId or shortlinkSlugs required');
+
     if (dto.target === 'NAME' && !dto.newName) throw new BadRequestException('newName required');
     if (dto.target === 'DESCRIPTION' && !dto.newDescription)
       throw new BadRequestException('newDescription required');
@@ -70,7 +76,10 @@ export class GroupUpdateSchedulesService {
         tenantId,
         instanceName: resolvedInstanceName,
         instanceTokenEnc: encryptToken(resolvedInstanceToken),
-        groupRemoteId: dto.groupRemoteId,
+        // Com rotação o alvo é resolvido na execução; o marcador deixa a dash legível.
+        groupRemoteId: slugs.length ? `shortlink:${slugs.join(',')}` : dto.groupRemoteId!,
+        shortlinkSlugs: slugs,
+        shortlinkPrevCount: slugs.length ? (dto.shortlinkPrevCount ?? 4) : null,
         target: dto.target,
         newName: dto.newName,
         newDescription: dto.newDescription,
@@ -165,6 +174,8 @@ export class GroupUpdateSchedulesService {
         ...(dto.instanceName ? { instanceName: dto.instanceName } : {}),
         ...(dto.instanceToken ? { instanceTokenEnc: encryptToken(dto.instanceToken) } : {}),
         ...(dto.groupRemoteId ? { groupRemoteId: dto.groupRemoteId } : {}),
+        ...(dto.shortlinkSlugs !== undefined ? { shortlinkSlugs: dto.shortlinkSlugs } : {}),
+        ...(dto.shortlinkPrevCount !== undefined ? { shortlinkPrevCount: dto.shortlinkPrevCount } : {}),
       },
     });
 

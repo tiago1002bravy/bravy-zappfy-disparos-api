@@ -423,6 +423,11 @@ model GroupUpdateSchedule {
   instanceName      String
   instanceTokenEnc  String
   groupRemoteId     String
+  // Rotação por shortlink: se preenchido, o worker ignora groupRemoteId e aplica
+  // na janela do shortlink (ativo + shortlinkPrevCount anteriores), igual ao disparo.
+  // newName aceita {N} = número do grupo (#214).
+  shortlinkSlugs     String[]         @default([])
+  shortlinkPrevCount Int?
   target            GroupUpdateTarget
   newName           String?
   newDescription    String?

@@ -5,7 +5,7 @@ loadEnv();
 import { FlowProducer, Worker } from 'bullmq';
 import IORedis from 'ioredis';
 import { Client as MinioClient } from 'minio';
-import { PrismaClient } from '@prisma/client';
+import { GroupUpdateSchedule, PrismaClient } from '@prisma/client';
 
 import {
   QUEUE_SEND_MESSAGE,
@@ -21,6 +21,7 @@ import { decryptToken } from './common/crypto.util';
 import { ZappfyClient } from './modules/zappfy/zappfy.client';
 import { notifyFailure } from './queue/webhook-notify.util';
 import { getOrderedPool, recordInstanceFailure, recordInstanceSuccess } from './common/instance-pool.util';
+import { resolveShortlinkRotation } from './common/shortlink-rotation.util';
 import { createContactSyncWorker, registerContactSyncRepeatables } from './workers/contact-sync.worker';
 import { createCampaignWorkers } from './workers/campaign.worker';
 import { createFlowWorkers, registerFlowScheduler } from './workers/flow.worker';
@@ -181,37 +182,10 @@ const sendOrchestratorWorker = new Worker<SendMessageJobData>(
     // frios. Comportamento: pra cada slug, pega o item ACTIVE atual + os
     // shortlinkPrevCount items anteriores (status=FULL, order desc).
     if (sched.shortlinkRotationEnabled && sched.shortlinkSlugs.length) {
-      const prevCount = sched.shortlinkPrevCount ?? 2;
-      for (const slug of sched.shortlinkSlugs) {
-        const sl = await prisma.groupShortlink.findFirst({
-          where: { tenantId, slug },
-          include: {
-            items: {
-              include: { group: true },
-              orderBy: { order: 'asc' },
-            },
-          },
-        });
-        if (!sl) {
-          log(`shortlinkRotation: slug "${slug}" não encontrado no tenant ${tenantId}, pulando`);
-          continue;
-        }
-        const active = sl.items.find((i) => i.status === 'ACTIVE');
-        if (!active) {
-          log(`shortlinkRotation: slug "${slug}" sem item ACTIVE, pulando`);
-          continue;
-        }
-        const previous = sl.items
-          .filter((i) => i.status === 'FULL' && i.order < active.order)
-          .sort((a, b) => b.order - a.order)
-          .slice(0, prevCount);
-        const resolved: string[] = [active.group.remoteId];
-        for (const p of previous) resolved.push(p.group.remoteId);
-        for (const rid of resolved) targetSet.add(rid);
-        log(
-          `shortlinkRotation: slug "${slug}" resolveu ${resolved.length} grupos (ativo + ${previous.length} anteriores) no schedule ${scheduleId}: ${resolved.join(', ')}`,
-        );
-      }
+      const resolved = await resolveShortlinkRotation(
+        prisma, tenantId, sched.shortlinkSlugs, sched.shortlinkPrevCount ?? 2, log, `schedule ${scheduleId}`,
+      );
+      for (const r of resolved) targetSet.add(r.remoteId);
     }
     const rawTargets = Array.from(targetSet);
     if (rawTargets.length === 0) {
@@ -474,6 +448,81 @@ async function applyGroupUpdate(
   }
 }
 
+/** Número do grupo ("#214") tirado do nome atual — alimenta o placeholder {N}. */
+const groupNumberFromName = (name: string | null): string | null => name?.match(/#\d+/)?.[0] ?? null;
+
+/**
+ * Rename por shortlink: resolve a MESMA janela do disparo (ativo + N anteriores)
+ * no momento da execução e aplica em cada grupo, trocando {N} pelo número dele.
+ * Grupo que entra no disparo entra no rename sem cadastro manual.
+ */
+async function runRotationGroupUpdate(
+  sched: GroupUpdateSchedule,
+  tenantId: string,
+): Promise<void> {
+  const groupUpdateScheduleId = sched.id;
+  const groups = await resolveShortlinkRotation(
+    prisma, tenantId, sched.shortlinkSlugs, sched.shortlinkPrevCount ?? 2, log, `group update ${groupUpdateScheduleId}`,
+  );
+  const seen = new Set<string>();
+  const targets = groups.filter((g) => !seen.has(g.remoteId) && seen.add(g.remoteId));
+  const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } });
+  const pool = await getOrderedPool(prisma, tenantId, sched.instanceName);
+
+  for (const [idx, g] of targets.entries()) {
+    let newName = sched.newName;
+    if (sched.target === 'NAME' && newName?.includes('{N}')) {
+      const num = groupNumberFromName(g.name);
+      if (!num) {
+        const msg = `Grupo sem "#N" no nome (${g.name ?? 'sem nome'}), placeholder {N} não resolvido`;
+        log(`rotation update ${groupUpdateScheduleId}: ${msg} (${g.remoteId}), pulando`);
+        await prisma.execution.create({
+          data: { tenantId, groupUpdateScheduleId, status: 'FAILED', groupRemoteId: g.remoteId, errorMessage: msg },
+        });
+        continue;
+      }
+      newName = newName.split('{N}').join(num);
+    }
+
+    // Primeiro grupo sai na hora (ativo do shortlink = quem está recebendo gente agora)
+    if (idx > 0) await sleep(randomDelay());
+
+    const item = { ...sched, groupRemoteId: g.remoteId, newName };
+    const candidates = pool.length
+      ? pool.map((inst) => ({ instanceName: inst.instanceName, tokenEnc: inst.instanceTokenEnc, poolId: inst.id as string | null }))
+      : [{ instanceName: sched.instanceName, tokenEnc: sched.instanceTokenEnc, poolId: null }];
+    const errors: string[] = [];
+    let ok = false;
+    for (const c of candidates) {
+      try {
+        await applyGroupUpdate(decryptToken(c.tokenEnc), item, tenantId);
+        if (c.poolId) await recordInstanceSuccess(prisma, c.poolId);
+        await prisma.execution.create({
+          data: { tenantId, groupUpdateScheduleId, status: 'SUCCESS', groupRemoteId: g.remoteId, instanceName: c.instanceName },
+        });
+        ok = true;
+        break;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        errors.push(`${c.instanceName}: ${msg}`);
+        log(`failover rotation update: ${c.instanceName} falhou para ${g.remoteId}, tentando proxima`);
+        if (c.poolId) await recordInstanceFailure(prisma, c.poolId);
+      }
+    }
+    if (!ok) {
+      const errorMsg = `Todas as ${candidates.length} instancias falharam: ${errors.join(' | ')}`;
+      await prisma.execution.create({
+        data: { tenantId, groupUpdateScheduleId, status: 'FAILED', groupRemoteId: g.remoteId, errorMessage: errorMsg },
+      });
+      if (tenant?.failureWebhookUrl) {
+        await notifyFailure(tenant.failureWebhookUrl, {
+          groupUpdateScheduleId, groupRemoteId: g.remoteId, error: errorMsg, ranAt: new Date().toISOString(),
+        });
+      }
+    }
+  }
+}
+
 const updateWorker = new Worker<UpdateGroupJobData>(
   QUEUE_UPDATE_GROUP,
   async (job) => {
@@ -483,6 +532,14 @@ const updateWorker = new Worker<UpdateGroupJobData>(
       where: { id: groupUpdateScheduleId, tenantId },
     });
     if (!sched || sched.status !== 'ACTIVE') return;
+
+    if (sched.shortlinkSlugs.length) {
+      await runRotationGroupUpdate(sched, tenantId);
+      if (sched.type === 'ONCE') {
+        await prisma.groupUpdateSchedule.update({ where: { id: groupUpdateScheduleId }, data: { status: 'COMPLETED' } });
+      }
+      return;
+    }
 
     const wait = randomDelay();
     log(`anti-ban delay ${wait}ms before group update ${sched.groupRemoteId}`);
