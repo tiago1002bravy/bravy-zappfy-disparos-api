@@ -158,7 +158,33 @@ export class GroupsService {
         'Configure sua conexão WhatsApp em Configurações > Minha conexão antes de disparar.',
       );
     }
-    const remote = await this.zappfy.listGroups(resolvedInstanceToken);
+
+    // Failover: se a conexão do usuário caiu, lista pelos números vivos do pool.
+    // Os grupos continuam gravados na instância do usuário (shortlinks, listas e a
+    // própria tela apontam pra essas linhas). Via reserva a visão é parcial (ela
+    // pode não estar em todos os grupos), então não desativa nada nesse caso.
+    let remote: Awaited<ReturnType<ZappfyClient['listGroups']>>;
+    let viaFallback = false;
+    const explicit = !!(instanceName && instanceToken);
+    try {
+      remote = await this.zappfy.listGroups(resolvedInstanceToken);
+    } catch (err) {
+      if (explicit || !this.poolFailover) throw err;
+      const conns = await getPoolConnections(this.prisma, tenantId, resolvedInstanceName);
+      let found: typeof remote | null = null;
+      for (const c of conns) {
+        if (c.token === resolvedInstanceToken) continue;
+        try {
+          found = await this.zappfy.listGroups(c.token);
+          break;
+        } catch {
+          // tenta o próximo
+        }
+      }
+      if (!found) throw err;
+      remote = found;
+      viaFallback = true;
+    }
     const remoteIds = new Set(remote.map((g) => g.id));
 
     // 1. Upsert cada grupo presente na instancia, marcando active=true
@@ -206,7 +232,8 @@ export class GroupsService {
       data: { active: false },
     });
 
-    await this.prisma.$transaction([...upserts, deactivate]);
+    if (viaFallback) await this.prisma.$transaction(upserts);
+    else await this.prisma.$transaction([...upserts, deactivate]);
 
     return this.list(resolvedInstanceName);
   }
