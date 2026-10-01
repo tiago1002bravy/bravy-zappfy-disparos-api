@@ -95,8 +95,18 @@ export class ZappfyClient {
   }
 
   async listGroups(token: string): Promise<ZappfyGroup[]> {
-    const { data } = await this.http(token).post('/group/list', {});
-    const arr = Array.isArray(data) ? data : (data?.groups ?? []);
+    // /group/list é paginado (limit 50 por padrão, com pagination.totalRecords).
+    // Ler só a 1ª página escondia os grupos mais novos e o sync desativava o resto.
+    const PAGE = 50;
+    const arr: Record<string, unknown>[] = [];
+    for (let offset = 0; offset < 5000; offset += PAGE) {
+      const { data } = await this.http(token).post('/group/list', { limit: PAGE, offset });
+      const page: Record<string, unknown>[] = Array.isArray(data) ? data : (data?.groups ?? []);
+      arr.push(...page);
+      const total = data?.pagination?.totalRecords;
+      if (Array.isArray(data) || typeof total !== 'number' || page.length === 0) break;
+      if (arr.length >= total) break;
+    }
     return arr.map((g: Record<string, unknown>) => ({
       id: String(g.id ?? g.JID ?? g.jid ?? ''),
       name: String(g.name ?? g.subject ?? g.Name ?? ''),
