@@ -95,9 +95,9 @@ export class ZappfyClient {
   }
 
   async listGroups(token: string): Promise<ZappfyGroup[]> {
-    // /group/list é paginado (limit 50 por padrão, com pagination.totalRecords).
+    // /group/list é paginado (limit 50 se omitido, com pagination.totalRecords).
     // Ler só a 1ª página escondia os grupos mais novos e o sync desativava o resto.
-    const PAGE = 50;
+    const PAGE = 500; // 1 chamada cobre o caso normal; cada página custa ~25-40s na Uazapi
     const arr: Record<string, unknown>[] = [];
     for (let offset = 0; offset < 5000; offset += PAGE) {
       const { data } = await this.http(token).post('/group/list', { limit: PAGE, offset });
