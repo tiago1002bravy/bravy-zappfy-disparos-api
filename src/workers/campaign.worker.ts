@@ -34,6 +34,8 @@ export function createCampaignWorkers(deps: {
   connection: IORedis;
   prisma: PrismaClient;
   cloudApi: CloudApiClient;
+  /** URL pública assinada de uma Media do Zappfy (header de template dos fluxos) */
+  buildMediaUrl?: (mediaId: string) => string;
 }): Worker[] {
   const { connection, prisma, cloudApi } = deps;
   const dispatchQueue = new Queue<CampaignDispatchJobData>(QUEUE_CAMPAIGN_DISPATCH, { connection });
@@ -343,6 +345,8 @@ export function createCampaignWorkers(deps: {
         chatBody?: string;
         chatSource?: string;
         language?: string;
+        headerMediaId?: string;
+        headerMediaType?: 'image' | 'video' | 'document';
       } | null;
 
       let templateName: string;
@@ -350,10 +354,16 @@ export function createCampaignWorkers(deps: {
       let bodyParams: string[];
       let headerMediaType: 'image' | 'video' | 'document' | undefined;
 
+      let flowHeaderUrl: string | undefined;
       if (message.templateName) {
         templateName = message.templateName;
         templateLanguage = flowContext?.language ?? 'pt_BR';
         bodyParams = flowContext?.params ?? [];
+        if (flowContext?.headerMediaId) {
+          if (!deps.buildMediaUrl) throw new Error('buildMediaUrl ausente: fluxo com header de mídia');
+          flowHeaderUrl = deps.buildMediaUrl(flowContext.headerMediaId);
+          headerMediaType = flowContext.headerMediaType ?? 'image';
+        }
       } else {
         if (!campaign.template) {
           await prisma.campaignMessage.update({
@@ -393,8 +403,10 @@ export function createCampaignWorkers(deps: {
           templateName,
           language: templateLanguage,
           bodyParams,
-          headerMediaUrl: message.templateName ? undefined : (campaign.headerMediaUrl ?? undefined),
-          headerMediaType: !message.templateName && campaign.headerMediaUrl ? headerMediaType : undefined,
+          headerMediaUrl: message.templateName ? flowHeaderUrl : (campaign.headerMediaUrl ?? undefined),
+          headerMediaType: message.templateName
+            ? (flowHeaderUrl ? headerMediaType : undefined)
+            : (campaign.headerMediaUrl ? headerMediaType : undefined),
         });
         await prisma.campaignMessage.update({
           where: { id: message.id },

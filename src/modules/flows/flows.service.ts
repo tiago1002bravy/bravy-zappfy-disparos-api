@@ -4,7 +4,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { requireTenantId } from '../../common/tenant-context';
 import { QueueService } from '../../queue/queue.service';
 import { normalizeBrPhone } from '../../common/phone.util';
-import { FlowConfig, FlowContextData, renderTokens } from './flow-config';
+import { FlowConfig, FlowContextData, headerContext, renderTokens } from './flow-config';
 
 export interface CreateFlowInput {
   name: string;
@@ -182,6 +182,7 @@ export class FlowsService {
       language: config.language ?? 'pt_BR',
       chatSource: config.chatSource,
       chatBody: config.chatBodyTemplate ? renderTokens(config.chatBodyTemplate, row) : undefined,
+      ...headerContext(config),
     };
 
     const { count } = await this.prisma.withoutTenant((db) =>

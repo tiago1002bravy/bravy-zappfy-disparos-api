@@ -628,7 +628,12 @@ registerContactSyncRepeatables(connection).catch((err) =>
 );
 
 // Campanhas 1:1 via Cloud API oficial
-const campaignWorkers = createCampaignWorkers({ connection, prisma, cloudApi: new CloudApiClient() });
+const campaignWorkers = createCampaignWorkers({
+  connection,
+  prisma,
+  cloudApi: new CloudApiClient(),
+  buildMediaUrl: buildPublicMediaUrl,
+});
 
 // Fluxos nativos (substituem a esteira n8n): agendador + runner
 // Buffer proativo de grupos dos shortlinks (< 2 futuros -> cria 3)

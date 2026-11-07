@@ -8,7 +8,7 @@ import {
   QUEUE_CAMPAIGN_DISPATCH,
   QUEUE_FLOW_RUN,
 } from '../queue/queue.constants';
-import { FlowConfig, FlowContextData, renderTokens } from '../modules/flows/flow-config';
+import { FlowConfig, FlowContextData, headerContext, renderTokens } from '../modules/flows/flow-config';
 import { decryptToken } from '../common/crypto.util';
 import { normalizeBrPhone } from '../common/phone.util';
 import { ZappfyClient } from '../modules/zappfy/zappfy.client';
@@ -173,7 +173,7 @@ export function createFlowWorkers(deps: { connection: IORedis; prisma: PrismaCli
               flowId: flow.id,
               audienceKind: 'ALL',
               instanceIds: [flow.instanceId],
-              throttlePerMinute: 60,
+              throttlePerMinute: config.throttlePerMinute ?? 60,
               startAt: new Date(),
               status: 'RUNNING',
               startedAt: new Date(),
@@ -193,7 +193,7 @@ export function createFlowWorkers(deps: { connection: IORedis; prisma: PrismaCli
               flowId: flow.id,
               audienceKind: 'ALL',
               instanceIds: [flow.instanceId],
-              throttlePerMinute: 60,
+              throttlePerMinute: config.throttlePerMinute ?? 60,
               startAt: dayStart,
               status: 'RUNNING',
               startedAt: new Date(),
@@ -271,6 +271,7 @@ export function createFlowWorkers(deps: { connection: IORedis; prisma: PrismaCli
           language,
           chatSource,
           chatBody: config.chatBodyTemplate ? renderTokens(config.chatBodyTemplate, c.row) : undefined,
+          ...headerContext(config),
         };
         toCreate.push({
           tenantId,

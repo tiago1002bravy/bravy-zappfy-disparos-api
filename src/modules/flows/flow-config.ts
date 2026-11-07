@@ -49,6 +49,15 @@ export interface FlowConfig {
   language?: string; // default pt_BR
   /** Secret do webhook público POST /hooks/flows/:slug (opcional) */
   webhookSecret?: string;
+  /**
+   * Mídia do HEADER do template (id de Media do Zappfy, POST /media). O worker
+   * monta a URL pública assinada na hora do envio. Obrigatório quando o
+   * template aprovado tem HEADER de imagem/vídeo/documento.
+   */
+  headerMediaId?: string;
+  headerMediaType?: 'image' | 'video' | 'document';
+  /** Ritmo da campanha criada pelo fluxo, em mensagens/minuto (default 60) */
+  throttlePerMinute?: number;
 }
 
 export interface FlowContextData {
@@ -56,6 +65,15 @@ export interface FlowContextData {
   chatBody?: string;
   chatSource?: string;
   language?: string;
+  headerMediaId?: string;
+  headerMediaType?: 'image' | 'video' | 'document';
+}
+
+/** Campos de header do config que viajam no flowContext de cada mensagem */
+export function headerContext(config: FlowConfig): Pick<FlowContextData, 'headerMediaId' | 'headerMediaType'> {
+  return config.headerMediaId
+    ? { headerMediaId: config.headerMediaId, headerMediaType: config.headerMediaType ?? 'image' }
+    : {};
 }
 
 export function renderTokens(templateStr: string, row: Record<string, unknown>): string {
