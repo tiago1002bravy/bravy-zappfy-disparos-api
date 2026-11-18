@@ -37,3 +37,33 @@ export function normalizeBrPhone(raw: string): string | null {
 
   return null;
 }
+
+/** Países aceitos nos disparos 1:1 (Flow.config.phoneCountries). */
+export type PhoneCountry = 'BR' | 'PY';
+export const PHONE_COUNTRIES: readonly PhoneCountry[] = ['BR', 'PY'];
+
+/**
+ * Normaliza celular do Paraguai (DDI 595): 595 + 9 + 8 dígitos (12 dígitos,
+ * ex: 595981123456). Aceita +595, 00595, máscara e o 0 de tronco digitado
+ * depois do DDI (595 0981...). Sem DDI ("0981 123 456") é ambíguo com BR e
+ * volta null.
+ */
+export function normalizePyPhone(raw: string): string | null {
+  const digits = raw.replace(/\D/g, '').replace(/^0+/, '');
+  const m = digits.match(/^5950?(9\d{8})$/);
+  return m ? `595${m[1]}` : null;
+}
+
+/**
+ * Normaliza pelo conjunto de países permitido. Default só BR, idêntico ao
+ * normalizeBrPhone: quem não pede PY explicitamente não muda de comportamento.
+ * Um número BR nunca casa com o padrão PY (BR com DDI começa com 55; sem DDI
+ * tem 10-11 dígitos e não existe DDD 59), então a ordem não importa.
+ */
+export function normalizePhone(raw: string, countries: readonly PhoneCountry[] = ['BR']): string | null {
+  if (countries.includes('PY')) {
+    const py = normalizePyPhone(raw);
+    if (py) return py;
+  }
+  return countries.includes('BR') ? normalizeBrPhone(raw) : null;
+}

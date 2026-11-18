@@ -3,8 +3,8 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { requireTenantId } from '../../common/tenant-context';
 import { QueueService } from '../../queue/queue.service';
-import { normalizeBrPhone } from '../../common/phone.util';
-import { FlowConfig, FlowContextData, headerContext, renderTokens } from './flow-config';
+import { normalizePhone } from '../../common/phone.util';
+import { FlowConfig, FlowContextData, headerContext, phoneCountriesOf, renderTokens } from './flow-config';
 
 export interface CreateFlowInput {
   name: string;
@@ -133,7 +133,7 @@ export class FlowsService {
     if (!config.webhookSecret || config.webhookSecret !== secret) {
       throw new UnauthorizedException('invalid secret');
     }
-    const phone = normalizeBrPhone(String(body.phone ?? ''));
+    const phone = normalizePhone(String(body.phone ?? ''), phoneCountriesOf(config));
     if (!phone) throw new BadRequestException('phone inválido');
     const nome = String(body.nome ?? '').trim();
     const row = {

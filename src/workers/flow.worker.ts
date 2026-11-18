@@ -10,7 +10,8 @@ import {
 } from '../queue/queue.constants';
 import { FlowConfig, FlowContextData, headerContext, renderTokens } from '../modules/flows/flow-config';
 import { decryptToken } from '../common/crypto.util';
-import { normalizeBrPhone } from '../common/phone.util';
+import { normalizePhone } from '../common/phone.util';
+import { phoneCountriesOf } from '../modules/flows/flow-config';
 import { ZappfyClient } from '../modules/zappfy/zappfy.client';
 
 const log = (msg: string) => console.log(`[worker:flow] ${msg}`);
@@ -102,10 +103,11 @@ export function createFlowWorkers(deps: { connection: IORedis; prisma: PrismaCli
       if (rows.length === 0) return;
 
       // 2. Normalização + dedupe interno da rodada
+      const countries = phoneCountriesOf(config);
       const seen = new Set<string>();
       const candidates: Array<{ phone: string; row: Record<string, unknown> }> = [];
       for (const row of rows) {
-        const phone = normalizeBrPhone(String(row.telefone ?? row.phone ?? ''));
+        const phone = normalizePhone(String(row.telefone ?? row.phone ?? ''), countries);
         if (!phone || seen.has(phone)) continue;
         seen.add(phone);
         candidates.push({ phone, row });
@@ -138,7 +140,7 @@ export function createFlowWorkers(deps: { connection: IORedis; prisma: PrismaCli
               timeoutMs: 15_000,
             });
             const members = new Set(
-              info.participants.map((p) => normalizeBrPhone(p)).filter(Boolean) as string[],
+              info.participants.map((p) => normalizePhone(p, countries)).filter(Boolean) as string[],
             );
             for (let i = candidates.length - 1; i >= 0; i--) {
               if (members.has(candidates[i].phone)) candidates.splice(i, 1);

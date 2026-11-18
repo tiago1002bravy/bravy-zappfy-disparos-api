@@ -1,3 +1,5 @@
+import { PHONE_COUNTRIES, type PhoneCountry } from '../../common/phone.util';
+
 /**
  * Config JSON de um Flow (Flow.config). Interpretada pelo flow.worker.
  *
@@ -58,6 +60,12 @@ export interface FlowConfig {
   headerMediaType?: 'image' | 'video' | 'document';
   /** Ritmo da campanha criada pelo fluxo, em mensagens/minuto (default 60) */
   throttlePerMinute?: number;
+  /**
+   * Países de telefone aceitos na audiência e no webhook (default ['BR']).
+   * Fluxo do teste Paraguai usa ['BR', 'PY'] pra aceitar +595 e o brasiguaio
+   * com chip BR. Telefone fora da lista é descartado, como antes.
+   */
+  phoneCountries?: PhoneCountry[];
 }
 
 export interface FlowContextData {
@@ -74,6 +82,12 @@ export function headerContext(config: FlowConfig): Pick<FlowContextData, 'header
   return config.headerMediaId
     ? { headerMediaId: config.headerMediaId, headerMediaType: config.headerMediaType ?? 'image' }
     : {};
+}
+
+/** Países válidos do config; vazio, ausente ou inválido = só BR (comportamento antigo). */
+export function phoneCountriesOf(config: Pick<FlowConfig, 'phoneCountries'>): PhoneCountry[] {
+  const ok = (config.phoneCountries ?? []).filter((c): c is PhoneCountry => PHONE_COUNTRIES.includes(c));
+  return ok.length ? ok : ['BR'];
 }
 
 export function renderTokens(templateStr: string, row: Record<string, unknown>): string {
