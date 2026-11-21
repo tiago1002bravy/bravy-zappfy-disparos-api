@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { timingSafeEqual } from 'node:crypto';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -35,13 +35,58 @@ export type GroupEventResult =
  * avisa; não reativa sozinho.
  */
 @Injectable()
-export class GroupEventsService {
+export class GroupEventsService implements OnApplicationBootstrap {
   private readonly log = new Logger('GroupEvents');
 
   constructor(
     private prisma: PrismaService,
     private zappfy: ZappfyClient,
   ) {}
+
+  /** URL pública deste webhook (a Zappfy embrulha no webhook-bridge sozinha). */
+  static webhookUrl(): string {
+    const base = (process.env.PUBLIC_API_URL ?? 'https://grupos-api.bravy.com.br').replace(/\/$/, '');
+    return `${base}/api/v1/zappfy/webhook/groups`;
+  }
+
+  onApplicationBootstrap() {
+    if (process.env.GROUP_EVENTS_WEBHOOK_AUTOREGISTER === 'false') return;
+    // Não segura o boot: registra em segundo plano.
+    setTimeout(() => {
+      this.ensureWebhooks().catch((e) => this.log.warn(`ensureWebhooks falhou: ${(e as Error).message}`));
+    }, 5_000);
+  }
+
+  /**
+   * Garante o webhook `groups` apontando pra cá em toda instância UAZAPI ativa (de qualquer
+   * tenant). Idempotente: só adiciona onde falta. Roda no boot e pode ser chamado de novo.
+   */
+  async ensureWebhooks(): Promise<{ instance: string; result: string }[]> {
+    const url = GroupEventsService.webhookUrl();
+    const marker = 'zappfy/webhook/groups';
+    const insts = await this.prisma.instance.findMany({
+      where: { active: true, provider: 'UAZAPI' },
+      select: { instanceName: true, instanceTokenEnc: true },
+    });
+    const out: { instance: string; result: string }[] = [];
+    for (const i of insts) {
+      try {
+        const token = decryptToken(i.instanceTokenEnc);
+        const hooks = await this.zappfy.listWebhooks(token);
+        const has = hooks.some((h) => decodeURIComponent(decodeURIComponent(h.url ?? '')).includes(marker));
+        if (has) {
+          out.push({ instance: i.instanceName, result: 'ok' });
+          continue;
+        }
+        await this.zappfy.addWebhook(token, url, ['groups']);
+        out.push({ instance: i.instanceName, result: 'added' });
+      } catch (e) {
+        out.push({ instance: i.instanceName, result: `erro: ${(e as Error).message}` });
+      }
+    }
+    this.log.log(`webhook groups: ${out.map((o) => `${o.instance}=${o.result}`).join(', ')}`);
+    return out;
+  }
 
   async handle(body: ZappfyGroupsWebhook): Promise<GroupEventResult> {
     if (body?.EventType !== 'groups') return { handled: false, reason: 'not-groups' };

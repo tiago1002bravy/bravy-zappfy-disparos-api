@@ -116,6 +116,24 @@ export class ZappfyClient {
     }));
   }
 
+  /** Webhooks configurados na instância (GET /webhook). */
+  async listWebhooks(token: string): Promise<Array<{ id?: string; url?: string; events?: string[]; enabled?: boolean }>> {
+    const { data } = await this.http(token, 15_000).get('/webhook');
+    return Array.isArray(data) ? data : data ? [data] : [];
+  }
+
+  /** Adiciona um webhook na instância sem mexer nos existentes (action=add). */
+  async addWebhook(token: string, url: string, events: string[]) {
+    const { data } = await this.http(token, 15_000).post('/webhook', {
+      action: 'add',
+      enabled: true,
+      url,
+      events,
+      excludeMessages: [],
+    });
+    return data;
+  }
+
   async sendText(token: string, opts: ZappfySendTextOpts) {
     const body: Record<string, unknown> = {
       number: opts.number,
