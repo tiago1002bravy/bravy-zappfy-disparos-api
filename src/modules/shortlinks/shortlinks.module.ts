@@ -3,9 +3,11 @@ import { ShortlinksController, PublicShortlinkController } from './shortlinks.co
 import { ShortlinksService } from './shortlinks.service';
 import { ShortlinksResolver } from './shortlinks.resolver';
 import { GeoResolverService } from './geo-resolver.service';
+import { GroupEventsController } from './group-events.controller';
+import { GroupEventsService } from './group-events.service';
 
 @Module({
-  controllers: [ShortlinksController, PublicShortlinkController],
-  providers: [ShortlinksService, ShortlinksResolver, GeoResolverService],
+  controllers: [ShortlinksController, PublicShortlinkController, GroupEventsController],
+  providers: [ShortlinksService, ShortlinksResolver, GeoResolverService, GroupEventsService],
 })
 export class ShortlinksModule {}
