@@ -29,6 +29,8 @@ export type GroupEventResult =
  * dono 1258, foi suspenso e nenhum outro número recebeu o evento). Por isso o webhook
  * `groups` é registrado em todas as instâncias do pool apontando pra cá.
  *
+ * Autenticação pelo token da instância que vem no payload.
+ *
  * Ao receber Suspended=true: todo item ACTIVE/FULL desse grupo em qualquer shortlink vira
  * DISABLED (sai do rodízio na hora), o próximo ACTIVE tem o convite renovado e, se
  * configurado, avisa por WhatsApp (SHORTLINK_ALERT_PHONE). Unsuspended só registra e
@@ -98,7 +100,7 @@ export class GroupEventsService implements OnApplicationBootstrap {
 
     const inst = await this.authenticate(body);
     if (!inst) {
-      this.log.warn(`webhook groups descartado: instância não reconhecida (${body.instanceName ?? '-'})`);
+      this.log.warn(`webhook groups descartado: token não reconhecido (${body.instanceName ?? '-'})`);
       return { handled: false, reason: 'unauthorized' };
     }
 
@@ -156,13 +158,18 @@ export class GroupEventsService implements OnApplicationBootstrap {
     return { handled: true, action: 'suspended', items: mexidos };
   }
 
-  /** Confere instanceName + token do payload contra as instâncias cadastradas (Uazapi). */
+  /**
+   * Autentica pelo token da instância no payload (é o segredo). Não dá pra confiar no
+   * instanceName: o nome cadastrado aqui pode diferir do nome da instância na Zappfy
+   * (ex.: 8956c078 aqui = 132c361d na Zappfy, mesmo token).
+   */
   private async authenticate(body: ZappfyGroupsWebhook) {
-    if (!body.instanceName || !body.token) return null;
+    if (!body.token) return null;
     const cands = await this.prisma.instance.findMany({
-      where: { instanceName: body.instanceName, provider: 'UAZAPI' },
+      where: { provider: 'UAZAPI' },
       select: { tenantId: true, instanceName: true, instanceTokenEnc: true },
     });
+    const b = Buffer.from(body.token);
     for (const c of cands) {
       let tok: string;
       try {
@@ -171,7 +178,6 @@ export class GroupEventsService implements OnApplicationBootstrap {
         continue;
       }
       const a = Buffer.from(tok);
-      const b = Buffer.from(body.token);
       if (a.length === b.length && timingSafeEqual(a, b)) return c;
     }
     return null;
